@@ -16,7 +16,7 @@
 #
 
 # The target to build, see VALID_TARGETS below
-TARGET    ?= SPRACINGF3
+TARGET    ?= OMNIBUSF4V3_I2C_REMAP
 
 # Compile-time options
 OPTIONS   ?=

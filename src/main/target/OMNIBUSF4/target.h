@@ -20,6 +20,9 @@
 #ifdef OMNIBUSF4PRO_LEDSTRIPM5
 #define OMNIBUSF4PRO
 #endif
+#ifdef OMNIBUSF4V3_I2C_REMAP
+#define OMNIBUSF4PRO
+#endif
 #ifdef OMNIBUSF4PRO
 #define TARGET_BOARD_IDENTIFIER "OBSD"
 #elif defined(OMNIBUSF4V3)
@@ -41,15 +44,23 @@
 #define BEEPER                  PB4
 #define BEEPER_INVERTED
 
-#if defined(OMNIBUSF4V3)
+#if defined(OMNIBUSF4V3) || defined(OMNIBUSF4V3_I2C_REMAP)
   #define INVERTER_PIN_UART6      PC8
 #else
   #define INVERTER_PIN_UART1      PC0 // PC0 has never been used as inverter control on genuine OMNIBUS F4 variants, but leave it as is since some clones actually implement it.
 #endif
 
-#define USE_I2C
-#define I2C_DEVICE              (I2CDEV_2)
-#define I2C_DEVICE_SHARES_UART3
+#if defined(OMNIBUSF4V3_I2C_REMAP)
+  #define USE_I2C
+  #define SOFT_I2C
+  #define I2C_DEVICE              (I2CINVALID)
+  #define SOFT_I2C_SCL            PA1
+  #define SOFT_I2C_SDA            PA8
+#else
+  #define USE_I2C
+  #define I2C_DEVICE              (I2CDEV_2)
+  #define I2C_DEVICE_SHARES_UART3
+#endif
 
 // MPU6000 interrupts
 #define USE_EXTI
@@ -226,8 +237,13 @@
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
 
 // Number of available PWM outputs
+#if defined(OMNIBUSF4V3_I2C_REMAP)
+#define MAX_PWM_OUTPUT_PORTS    4
+#define TARGET_MOTOR_COUNT      4
+#else
 #define MAX_PWM_OUTPUT_PORTS    6
 #define TARGET_MOTOR_COUNT      6
+#endif
 
 #define TARGET_IO_PORTA         0xffff
 #define TARGET_IO_PORTB         0xffff
