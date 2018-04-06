@@ -191,8 +191,8 @@ static bool runcamDeviceSendRequestAndWaitingResp(runcamDevice_t *device, uint8_
     // only the command sending on initializing step need retry logic, 
     // otherwise, the timeout of 1000 ms is enough for the response from device
     if (commandID == RCDEVICE_PROTOCOL_COMMAND_GET_DEVICE_INFO) {
-        max_retries = 3;
-        timeoutMs = 300; // we have test some device, 100ms as timeout, and retry times be 3, it's stable for most case
+        max_retries = 10;
+        timeoutMs = 500; // we have test some device, 100ms as timeout, and retry times be 3, it's stable for most case
     }
 
     while (max_retries--) {

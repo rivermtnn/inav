@@ -53,12 +53,12 @@
 #if defined(OMNIBUSF4V3_I2C_REMAP)
   #define USE_I2C
   #define SOFT_I2C
-  #define I2C_DEVICE              (I2CINVALID)
+  #define USE_I2C_DEVICE_2
   #define SOFT_I2C_SCL            PA1
   #define SOFT_I2C_SDA            PA8
 #else
   #define USE_I2C
-  #define I2C_DEVICE              (I2CDEV_2)
+  #define USE_I2C_DEVICE_2
   #define I2C_DEVICE_SHARES_UART3
 #endif
 
