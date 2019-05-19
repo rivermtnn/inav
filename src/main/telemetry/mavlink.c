@@ -26,7 +26,7 @@
 
 #include "platform.h"
 
-#if defined(TELEMETRY) && defined(TELEMETRY_MAVLINK)
+#if defined(USE_TELEMETRY) && defined(USE_TELEMETRY_MAVLINK)
 
 #include "build/build_config.h"
 #include "build/debug.h"
@@ -52,7 +52,6 @@
 #include "flight/pid.h"
 #include "flight/servos.h"
 
-#include "io/gimbal.h"
 #include "io/gps.h"
 #include "io/ledstrip.h"
 #include "io/serial.h"
@@ -82,8 +81,6 @@
 #define TELEMETRY_MAVLINK_PORT_MODE     MODE_RXTX
 #define TELEMETRY_MAVLINK_MAXRATE       50
 #define TELEMETRY_MAVLINK_DELAY         ((1000 * 1000) / TELEMETRY_MAVLINK_MAXRATE)
-
-extern uint16_t rssi; // FIXME dependency on mw.c
 
 static serialPort_t *mavlinkPort = NULL;
 static serialPortConfig_t *portConfig;
@@ -162,7 +159,7 @@ void configureMAVLinkTelemetryPort(void)
         baudRateIndex = BAUD_57600;
     }
 
-    mavlinkPort = openSerialPort(portConfig->identifier, FUNCTION_TELEMETRY_MAVLINK, NULL, baudRates[baudRateIndex], TELEMETRY_MAVLINK_PORT_MODE, SERIAL_NOT_INVERTED);
+    mavlinkPort = openSerialPort(portConfig->identifier, FUNCTION_TELEMETRY_MAVLINK, NULL, NULL, baudRates[baudRateIndex], TELEMETRY_MAVLINK_PORT_MODE, SERIAL_NOT_INVERTED);
 
     if (!mavlinkPort) {
         return;
@@ -227,9 +224,9 @@ void mavlinkSendSystemStatus(void)
         // load Maximum usage in percent of the mainloop time, (0%: 0, 100%: 1000) should be always below 1000
         0,
         // voltage_battery Battery voltage, in millivolts (1 = 1 millivolt)
-        feature(FEATURE_VBAT) ? vbat * 100 : 0,
+        feature(FEATURE_VBAT) ? getBatteryVoltage() * 10 : 0,
         // current_battery Battery current, in 10*milliamperes (1 = 10 milliampere), -1: autopilot does not measure the current
-        feature(FEATURE_CURRENT_METER) ? amperage : -1,
+        isAmperageConfigured() ? getAmperage() : -1,
         // battery_remaining Remaining battery energy: (0%: 0, 100%: 100), -1: autopilot estimate the remaining battery
         feature(FEATURE_VBAT) ? calculateBatteryPercentage() : 100,
         // drop_rate_comm Communication drops in percent, (0%: 0, 100%: 10'000), (UART, I2C, SPI, CAN), dropped packets on all links (packets that were corrupted on reception on the MAV)
@@ -272,12 +269,12 @@ void mavlinkSendRCChannelsAndRSSI(void)
         // chan8_raw RC channel 8 value, in microseconds
         (rxRuntimeConfig.channelCount >= 8) ? rcData[7] : 0,
         // rssi Receive signal strength indicator, 0: 0%, 255: 100%
-        scaleRange(rssi, 0, 1023, 0, 255));
+        scaleRange(getRSSI(), 0, 1023, 0, 255));
 
     mavlinkSendMessage();
 }
 
-#if defined(GPS)
+#if defined(USE_GPS)
 void mavlinkSendPosition(timeUs_t currentTimeUs)
 {
     uint8_t gpsFixType = 0;
@@ -327,7 +324,7 @@ void mavlinkSendPosition(timeUs_t currentTimeUs)
         // alt Altitude in 1E3 meters (millimeters) above MSL
         gpsSol.llh.alt * 10,
         // relative_alt Altitude above ground in meters, expressed as * 1000 (millimeters)
-#if defined(NAV)
+#if defined(USE_NAV)
         getEstimatedActualPosition(Z) * 10,
 #else
         gpsSol.llh.alt * 10,
@@ -384,24 +381,24 @@ void mavlinkSendHUDAndHeartbeat(void)
     float mavAirSpeed = 0;
     float mavClimbRate = 0;
 
-#if defined(GPS)
+#if defined(USE_GPS)
     // use ground speed if source available
     if (sensors(SENSOR_GPS)) {
         mavGroundSpeed = gpsSol.groundSpeed / 100.0f;
     }
 #endif
 
-#if defined(PITOT)
+#if defined(USE_PITOT)
     if (sensors(SENSOR_PITOT)) {
         mavAirSpeed = pitot.airSpeed / 100.0f;
     }
 #endif
 
     // select best source for altitude
-#if defined(NAV)
+#if defined(USE_NAV)
     mavAltitude = getEstimatedActualPosition(Z) / 100.0f;
     mavClimbRate = getEstimatedActualVelocity(Z) / 100.0f;
-#elif defined(GPS)
+#elif defined(USE_GPS)
     if (sensors(SENSOR_GPS)) {
         // No surface or baro, just display altitude above MLS
         mavAltitude = gpsSol.llh.alt;
@@ -430,34 +427,24 @@ void mavlinkSendHUDAndHeartbeat(void)
         mavModes |= MAV_MODE_FLAG_SAFETY_ARMED;
 
     uint8_t mavSystemType;
-    switch (mixerConfig()->mixerMode)
+    switch (mixerConfig()->platformType)
     {
-        case MIXER_TRI:
-            mavSystemType = MAV_TYPE_TRICOPTER;
-            break;
-        case MIXER_QUADP:
-        case MIXER_QUADX:
-        case MIXER_Y4:
-        case MIXER_VTAIL4:
+        case PLATFORM_MULTIROTOR:
             mavSystemType = MAV_TYPE_QUADROTOR;
             break;
-        case MIXER_Y6:
-        case MIXER_HEX6:
-        case MIXER_HEX6X:
-            mavSystemType = MAV_TYPE_HEXAROTOR;
+        case PLATFORM_TRICOPTER:
+            mavSystemType = MAV_TYPE_TRICOPTER;
             break;
-        case MIXER_OCTOX8:
-        case MIXER_OCTOFLATP:
-        case MIXER_OCTOFLATX:
-            mavSystemType = MAV_TYPE_OCTOROTOR;
-            break;
-        case MIXER_FLYING_WING:
-        case MIXER_AIRPLANE:
-        case MIXER_CUSTOM_AIRPLANE:
+        case PLATFORM_AIRPLANE:
             mavSystemType = MAV_TYPE_FIXED_WING;
             break;
-        case MIXER_HELI_120_CCPM:
-        case MIXER_HELI_90_DEG:
+        case PLATFORM_ROVER:
+            mavSystemType = MAV_TYPE_GROUND_ROVER;
+            break;
+        case PLATFORM_BOAT:
+            mavSystemType = MAV_TYPE_SURFACE_BOAT;
+            break;
+        case PLATFORM_HELICOPTER:
             mavSystemType = MAV_TYPE_HELICOPTER;
             break;
         default:
@@ -524,7 +511,7 @@ void processMAVLinkTelemetry(timeUs_t currentTimeUs)
         mavlinkSendRCChannelsAndRSSI();
     }
 
-#ifdef GPS
+#ifdef USE_GPS
     if (mavlinkStreamTrigger(MAV_DATA_STREAM_POSITION)) {
         mavlinkSendPosition(currentTimeUs);
     }

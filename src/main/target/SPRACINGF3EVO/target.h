@@ -25,38 +25,43 @@
 #define BEEPER_INVERTED
 
 #define USE_EXTI
-#define MPU_INT_EXTI            PC13
-#define EXTI_CALLBACK_HANDLER_COUNT 2 // MPU data ready and MAG data ready
-#define EXTI15_10_CALLBACK_HANDLER_COUNT 2 // MPU_INT, SDCardDetect
+#define GYRO_INT_EXTI            PC13
 #define USE_MPU_DATA_READY_SIGNAL
 #define ENSURE_MPU_DATA_READY_IS_LOW
+
 #define MPU6500_CS_PIN          PB9
-#define MPU6500_SPI_INSTANCE    SPI1
+#define MPU6500_SPI_BUS         BUS_SPI1
 
-//#define USE_MAG_DATA_READY_SIGNAL
-//#define ENSURE_MAG_DATA_READY_IS_HIGH
+#define MPU9250_CS_PIN          PB9
+#define MPU9250_SPI_BUS         BUS_SPI1
 
-#define GYRO
-#define USE_GYRO_SPI_MPU6500
+#define USE_GYRO
+#define USE_GYRO_MPU6500
 #define GYRO_MPU6500_ALIGN      CW180_DEG
+#define USE_GYRO_MPU9250
+#define GYRO_MPU9250_ALIGN      CW180_DEG
 
-#define ACC
-#define USE_ACC_SPI_MPU6500
+#define USE_ACC
+#define USE_ACC_MPU6500
 #define ACC_MPU6500_ALIGN       CW180_DEG
+#define USE_ACC_MPU9250
+#define ACC_MPU9250_ALIGN       CW180_DEG
 
-#define BARO
+#define USE_BARO
+#define BARO_I2C_BUS            BUS_I2C1
 #define USE_BARO_BMP280
 #define USE_BARO_MS5611
 
-#define MAG
-#define USE_MPU9250_MAG // Enables bypass configuration
-#define USE_MAG_AK8963
-//#define USE_MAG_MAG3110 // External
-#define USE_MAG_HMC5883 // External
-#define USE_MAG_QMC5883 // External
-#define MAG_AK8963_ALIGN        CW270_DEG_FLIP
-
-#define USB_IO
+#define USE_MAG
+#define MAG_I2C_BUS             BUS_I2C1
+#define MAG_MPU9250_ALIGN       CW270_DEG
+#define USE_MAG_MPU9250
+#define USE_MAG_HMC5883
+#define USE_MAG_QMC5883
+#define USE_MAG_IST8310
+#define USE_MAG_IST8308
+#define USE_MAG_MAG3110
+#define USE_MAG_LIS3MDL
 
 #define USE_VCP
 #define USE_UART1
@@ -89,7 +94,7 @@
 #endif
 
 #define USE_I2C
-#define I2C_DEVICE              (I2CDEV_1) // PB6/SCL, PB7/SDA
+#define USE_I2C_DEVICE_1
 
 #define USE_SPI
 #define USE_SPI_DEVICE_1 // PB9,3,4,5 on AF5 SPI1 (MPU)
@@ -104,16 +109,14 @@
 #define SPI2_SCK_PIN            PB13
 #define SPI2_MISO_PIN           PB14
 #define SPI2_MOSI_PIN           PB15
+#define SPI2_CLOCK_LEADING_EDGE
 
 #define USE_SDCARD
-#define USE_SDCARD_SPI2
-
+#define USE_SDCARD_SPI
 #define SDCARD_DETECT_INVERTED
 #define SDCARD_DETECT_PIN       PC14
-#define SDCARD_SPI_INSTANCE     SPI2
-#define SDCARD_SPI_CS_PIN       SPI2_NSS_PIN
-#define SDCARD_DMA_CHANNEL_TX               DMA1_Channel5
-#define SDCARD_DMA_CHANNEL_TX_COMPLETE_FLAG DMA1_FLAG_TC5
+#define SDCARD_SPI_BUS          BUS_SPI2
+#define SDCARD_CS_PIN           SPI2_NSS_PIN
 
 #define USE_ADC
 #define ADC_INSTANCE            ADC2
@@ -124,13 +127,11 @@
 #define CURRENT_METER_ADC_CHANNEL       ADC_CHN_2
 #define RSSI_ADC_CHANNEL                ADC_CHN_3
 
-#define LED_STRIP
-#define USE_LED_STRIP_ON_DMA1_CHANNEL2
+#define USE_LED_STRIP
 #define WS2811_PIN                      PA8
-#define WS2811_DMA_STREAM               DMA1_Channel2
-#define WS2811_DMA_HANDLER_IDENTIFER    DMA1_CH2_HANDLER
 
 #define USE_RANGEFINDER
+#define RANGEFINDER_I2C_BUS             BUS_I2C1
 #define USE_RANGEFINDER_HCSR04
 #define RANGEFINDER_HCSR04_TRIGGER_PIN       PB0
 #define RANGEFINDER_HCSR04_ECHO_PIN          PB1
@@ -139,9 +140,9 @@
 #define ENABLE_BLACKBOX_LOGGING_ON_SDCARD_BY_DEFAULT
 
 #define DEFAULT_RX_TYPE         RX_TYPE_PPM
-#define DEFAULT_FEATURES        (FEATURE_TRANSPONDER | FEATURE_BLACKBOX | FEATURE_RSSI_ADC | FEATURE_CURRENT_METER | FEATURE_VBAT | FEATURE_TELEMETRY)
+#define DEFAULT_FEATURES        (FEATURE_TX_PROF_SEL | FEATURE_TRANSPONDER | FEATURE_BLACKBOX | FEATURE_RSSI_ADC | FEATURE_CURRENT_METER | FEATURE_VBAT | FEATURE_TELEMETRY)
 
-#define SPEKTRUM_BIND
+#define USE_SPEKTRUM_BIND
 #define BIND_PIN                PB11 // UART3
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
@@ -154,6 +155,3 @@
 #define TARGET_IO_PORTB         0xffff
 #define TARGET_IO_PORTC         (BIT(13)|BIT(14)|BIT(15))
 #define TARGET_IO_PORTF         (BIT(0)|BIT(1)|BIT(4))
-
-#define USABLE_TIMER_CHANNEL_COUNT 12 // PPM, 8 PWM, UART3 RX/TX, LED Strip
-#define USED_TIMERS             (TIM_N(1) | TIM_N(2) | TIM_N(3) | TIM_N(8) | TIM_N(15))

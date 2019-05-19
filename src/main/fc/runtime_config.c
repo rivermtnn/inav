@@ -30,6 +30,15 @@ uint32_t flightModeFlags = 0;
 
 static uint32_t enabledSensors = 0;
 
+#if !defined(CLI_MINIMAL_VERBOSITY)
+const char *armingDisableFlagNames[]= {
+    "FS", "ANGLE", "CAL", "OVRLD", "NAV", "COMPASS",
+    "ACC", "ARMSW", "HWFAIL", "BOXFS", "KILLSW", "RX",
+    "THR", "CLI", "CMS", "OSD", "ROLL/PITCH", "AUTOTRIM", "OOM",
+    "SETTINGFAIL",
+};
+#endif
+
 armingFlag_e isArmingDisabledReason(void)
 {
     armingFlag_e flag;
@@ -93,7 +102,7 @@ uint32_t sensorsMask(void)
 
 flightModeForTelemetry_e getFlightModeForTelemetry(void)
 {
-    if (FLIGHT_MODE(PASSTHRU_MODE))
+    if (FLIGHT_MODE(MANUAL_MODE))
         return FLM_MANUAL;
 
     if (FLIGHT_MODE(FAILSAFE_MODE))
@@ -119,6 +128,6 @@ flightModeForTelemetry_e getFlightModeForTelemetry(void)
 
     if (FLIGHT_MODE(NAV_LAUNCH_MODE))
         return FLM_LAUNCH;
-    
+
     return FLM_ACRO;
 }

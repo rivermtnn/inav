@@ -87,7 +87,7 @@ typedef struct {
     uint32_t    unrepliedRequests;  // 0 - all answered, 1 - request in progress, 2 or more - device failed to answer one or more requests
 
     uint8_t     rxDataReadySize;
-    uint8_t     txDataReadySize;    
+    uint8_t     txDataReadySize;
     uint8_t     rxPacket[UIB_MAX_PACKET_SIZE];
     uint8_t     txPacket[UIB_MAX_PACKET_SIZE];
 } uavInterconnectSlot_t;
@@ -498,7 +498,7 @@ void uavInterconnectBusInit(void)
         return;
 
     baudRate_e baudRateIndex = portConfig->peripheral_baudrateIndex;
-    busPort = openSerialPort(portConfig->identifier, FUNCTION_UAV_INTERCONNECT, NULL, baudRates[baudRateIndex], MODE_RXTX, UIB_PORT_OPTIONS);
+    busPort = openSerialPort(portConfig->identifier, FUNCTION_UAV_INTERCONNECT, NULL, NULL, baudRates[baudRateIndex], MODE_RXTX, UIB_PORT_OPTIONS);
     if (!busPort)
         return;
 
@@ -580,7 +580,7 @@ uint8_t uibRead(uint8_t devId, uint8_t * buffer, uint8_t bufSize)
     if (slot == NULL)
         return 0;
 
-    // If no READ capability - fail 
+    // If no READ capability - fail
     if (!(slot->deviceFlags & UIB_FLAG_HAS_READ))
         return false;
 
@@ -597,7 +597,7 @@ uint8_t uibRead(uint8_t devId, uint8_t * buffer, uint8_t bufSize)
 
 static bool slotCanWrite(const uavInterconnectSlot_t * slot)
 {
-    // If no WRITE capability - fail 
+    // If no WRITE capability - fail
     if (!(slot->deviceFlags & UIB_FLAG_HAS_WRITE))
         return false;
 
@@ -629,7 +629,7 @@ bool uibWrite(uint8_t devId, const uint8_t * buffer, uint8_t len)
         slot->txDataReadySize = len;
         return true;
     }
-    
+
     return false;
 }
 #endif

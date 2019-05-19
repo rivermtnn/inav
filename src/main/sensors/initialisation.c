@@ -37,6 +37,7 @@
 #include "sensors/compass.h"
 #include "sensors/rangefinder.h"
 #include "sensors/opflow.h"
+#include "sensors/temperature.h"
 #include "sensors/initialisation.h"
 
 uint8_t requestedSensors[SENSOR_INDEX_COUNT] = { GYRO_AUTODETECT, ACC_NONE, BARO_NONE, MAG_NONE, RANGEFINDER_NONE, PITOT_NONE, OPFLOW_NONE };
@@ -51,20 +52,22 @@ bool sensorsAutodetect(void)
         return false;
     }
 
-    accInit(getAccUpdateRate());
+    accInit(getLooptime());
 
-#ifdef BARO
+#ifdef USE_BARO
     baroInit();
 #endif
 
-#ifdef PITOT
+#ifdef USE_PITOT
     pitotInit();
 #endif
 
-    // FIXME extract to a method to reduce dependencies, maybe move to sensors_compass.c
-    mag.magneticDeclination = 0.0f; // TODO investigate if this is actually needed if there is no mag sensor or if the value stored in the config should be used.
-#ifdef MAG
+#ifdef USE_MAG
     compassInit();
+#endif
+
+#ifdef USE_TEMPERATURE_SENSOR
+    temperatureInit();
 #endif
 
 #ifdef USE_RANGEFINDER
@@ -80,21 +83,21 @@ bool sensorsAutodetect(void)
         eepromUpdatePending = true;
     }
 
-#ifdef BARO
+#ifdef USE_BARO
     if (barometerConfig()->baro_hardware == BARO_AUTODETECT) {
         barometerConfigMutable()->baro_hardware = detectedSensors[SENSOR_INDEX_BARO];
         eepromUpdatePending = true;
     }
 #endif
 
-#ifdef MAG
+#ifdef USE_MAG
     if (compassConfig()->mag_hardware == MAG_AUTODETECT) {
         compassConfigMutable()->mag_hardware = detectedSensors[SENSOR_INDEX_MAG];
         eepromUpdatePending = true;
     }
 #endif
 
-#ifdef PITOT
+#ifdef USE_PITOT
     if (pitotmeterConfig()->pitot_hardware == PITOT_AUTODETECT) {
         pitotmeterConfigMutable()->pitot_hardware = detectedSensors[SENSOR_INDEX_PITOT];
         eepromUpdatePending = true;

@@ -22,11 +22,13 @@
 
 #include "build/build_config.h"
 
+#include "common/utils.h"
+
 #include "pitotmeter.h"
 #include "pitotmeter_adc.h"
 #include "adc.h"
 
-#if defined(USE_PITOT_ADC)
+#if defined(USE_ADC) && defined(USE_PITOT_ADC)
 
 /*
  * NXP MPXV7002DP differential pressure sensor
@@ -36,16 +38,21 @@
 #define PITOT_ADC_VOLTAGE_ZERO          (2.5f)              // Pressure offset is 2.5V
 #define PITOT_ADC_VOLTAGE_TO_PRESSURE   (1000.0f)           // 1V/kPa = 1000 Pa/V
 
-static void adcPitotStart(void)
+static bool adcPitotStart(pitotDev_t *pitot)
 {
+    UNUSED(pitot);
+    return true;
 }
 
-static void adcPitotRead(void)
+static bool adcPitotRead(pitotDev_t *pitot)
 {
+    UNUSED(pitot);
+    return true;
 }
 
-static void adcPitotCalculate(float *pressure, float *temperature)
+static void adcPitotCalculate(pitotDev_t *pitot, float *pressure, float *temperature)
 {
+    UNUSED(pitot);
     uint16_t adcRaw = adcGetChannel(ADC_AIRSPEED);
     float voltage = (float)adcRaw * (3.3f / 4095.0f);  // 12 bit ADC with 3.3V VREF
 

@@ -28,43 +28,51 @@
 #define BEEPER_INVERTED
 
 #define MPU6000_CS_PIN        PA4
-#define MPU6000_SPI_INSTANCE  SPI1
+#define MPU6000_SPI_BUS       BUS_SPI1
 
-#define ACC
-#define USE_ACC_SPI_MPU6000
+#define USE_ACC
+#define USE_ACC_MPU6000
 #define ACC_MPU6000_ALIGN CW270_DEG
 
-#define GYRO
-#define USE_GYRO_SPI_MPU6000
+#define USE_GYRO
+#define USE_GYRO_MPU6000
 #define GYRO_MPU6000_ALIGN CW270_DEG
 
 // MPU6000 interrupts
 #define USE_MPU_DATA_READY_SIGNAL
-#define MPU_INT_EXTI PC4
+#define GYRO_INT_EXTI            PC4
 #define USE_EXTI
 
-#define MAG
+#define USE_MAG
+#define MAG_I2C_BUS             BUS_I2C2
+#define MAG_HMC5883_ALIGN       CW270_DEG_FLIP
 #define USE_MAG_HMC5883
 #define USE_MAG_QMC5883
-#define MAG_I2C_INSTANCE I2C_DEVICE_EXT
-#define MAG_HMC5883_ALIGN CW270_DEG_FLIP
-//#define MAG_HMC5883_ALIGN CW90_DEG
+#define USE_MAG_IST8310
+#define USE_MAG_IST8308
+#define USE_MAG_MAG3110
+#define USE_MAG_LIS3MDL
 
-#define BARO
-#define USE_BARO_MS5611
+#define TEMPERATURE_I2C_BUS     BUS_I2C2
+
+#define USE_BARO
 
 #ifdef ANYFCF7_EXTERNAL_BARO
+    #define BARO_I2C_BUS        BUS_I2C2
+    #define USE_BARO_MS5611
     #define USE_BARO_BMP085
     #define USE_BARO_BMP280
-    #define BARO_I2C_INSTANCE I2C_DEVICE_EXT
+#else
+    #define BARO_I2C_BUS        BUS_I2C4
+    #define USE_BARO_MS5611
 #endif
 
-#define USE_PITOT_MS4525
-#define PITOT_I2C_INSTANCE I2C_DEVICE_EXT
+#define PITOT_I2C_BUS           BUS_I2C2
 
-#define USABLE_TIMER_CHANNEL_COUNT 16
+#define USE_RANGEFINDER
+#define USE_RANGEFINDER_HCSR04_I2C
+#define RANGEFINDER_I2C_BUS     BUS_I2C2
 
-#define USB_IO
 #define USE_VCP
 #define VBUS_SENSING_PIN PA8
 
@@ -104,6 +112,7 @@
 
 #define USE_SPI
 #define USE_SPI_DEVICE_1
+#define USE_SPI_DEVICE_3
 #define USE_SPI_DEVICE_4
 
 #define SPI1_NSS_PIN            PA4
@@ -111,43 +120,38 @@
 #define SPI1_MISO_PIN           PA6
 #define SPI1_MOSI_PIN           PA7
 
+#define SPI3_NSS_PIN            PD2
+#define SPI3_SCK_PIN            PC10
+#define SPI3_MISO_PIN           PC11
+#define SPI3_MOSI_PIN           PC12
+
 #define SPI4_NSS_PIN            PE11
 #define SPI4_SCK_PIN            PE12
 #define SPI4_MISO_PIN           PE13
 #define SPI4_MOSI_PIN           PE14
+#define SPI4_CLOCK_LEADING_EDGE
+
+#define USE_OSD
+#define USE_MAX7456
+#define MAX7456_SPI_BUS         BUS_SPI3
+#define MAX7456_CS_PIN          SPI3_NSS_PIN
 
 #define USE_SDCARD
-
-// This is needed for BangGood board that used wrong sdcard socket!!!
+#define USE_SDCARD_SPI
 #define SDCARD_DETECT_INVERTED
-
-#define SDCARD_DETECT_PIN                   PD3
-#define SDCARD_DETECT_EXTI_LINE             EXTI_Line3
-#define SDCARD_DETECT_EXTI_PIN_SOURCE       EXTI_PinSource3
-#define SDCARD_DETECT_EXTI_PORT_SOURCE      EXTI_PortSourceGPIOD
-#define SDCARD_DETECT_EXTI_IRQn             EXTI3_IRQn
-
-#define SDCARD_SPI_INSTANCE                 SPI4
-#define SDCARD_SPI_CS_PIN                   SPI4_NSS_PIN
-
-#define SDCARD_DMA_CHANNEL_TX               DMA2_Stream1
-#define SDCARD_DMA_CHANNEL_TX_COMPLETE_FLAG DMA_FLAG_TCIF1_5
-#define SDCARD_DMA_CLK                      RCC_AHB1Periph_DMA2
-#define SDCARD_DMA_CHANNEL                  DMA_CHANNEL_4
+#define SDCARD_DETECT_PIN       PD3
+#define SDCARD_SPI_BUS          BUS_SPI4
+#define SDCARD_CS_PIN           SPI4_NSS_PIN
 
 #define USE_I2C
 #define USE_I2C_DEVICE_4
-#define I2C_DEVICE (I2CDEV_4)
-#define I2C_DEVICE_EXT (I2CDEV_2)
-//#define USE_I2C_PULLUP
-
-//#define HIL
+#define USE_I2C_DEVICE_2
 
 #define MAG_GPS_ALIGN           CW180_DEG_FLIP
 
 #define SENSORS_SET (SENSOR_ACC|SENSOR_MAG|SENSOR_BARO)
 
-#define NAV
+#define USE_NAV
 #define NAV_AUTO_MAG_DECLINATION
 #define NAV_GPS_GLITCH_DETECTION
 
@@ -159,23 +163,12 @@
 #define CURRENT_METER_ADC_CHANNEL       ADC_CHN_2
 #define RSSI_ADC_CHANNEL                ADC_CHN_3
 
-#define LED_STRIP
-
-// LED Strip can run off Pin 6 (PA0) of the ESC outputs.
+#define USE_LED_STRIP
 #define WS2811_PIN                      PA1
-#define WS2811_TIMER                    TIM5
-#define WS2811_TIMER_CHANNEL            TIM_CHANNEL_2
-#define WS2811_DMA_HANDLER_IDENTIFER    DMA1_ST4_HANDLER
-#define WS2811_DMA_STREAM               DMA1_Stream4
-#define WS2811_DMA_FLAG                 DMA_FLAG_TCIF4
-#define WS2811_DMA_IT                   DMA_IT_TCIF4
-#define WS2811_DMA_CHANNEL              DMA_CHANNEL_6
-#define WS2811_DMA_IRQ                  DMA1_Stream4_IRQn
-#define WS2811_TIMER_GPIO_AF            GPIO_AF2_TIM5
 
 #define ENABLE_BLACKBOX_LOGGING_ON_SDCARD_BY_DEFAULT
 
-#define DEFAULT_FEATURES        (FEATURE_BLACKBOX)
+#define DEFAULT_FEATURES        (FEATURE_TX_PROF_SEL | FEATURE_BLACKBOX)
 #define DEFAULT_RX_TYPE         RX_TYPE_SERIAL
 #define SERIALRX_PROVIDER       SERIALRX_SBUS
 
@@ -190,4 +183,4 @@
 #define TARGET_IO_PORTD 0xffff
 #define TARGET_IO_PORTE 0xffff
 
-#define USED_TIMERS  ( TIM_N(2) | TIM_N(3) | TIM_N(4) | TIM_N(5) | TIM_N(12) | TIM_N(8) | TIM_N(9) | TIM_N(10) | TIM_N(11))
+#define PCA9685_I2C_BUS         BUS_I2C2

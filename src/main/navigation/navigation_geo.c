@@ -21,7 +21,7 @@
 
 #include "platform.h"
 
-#if defined(NAV)
+#if defined(USE_NAV)
 
 #include "build/build_config.h"
 #include "build/debug.h"
@@ -133,7 +133,7 @@ float geoCalculateMagDeclination(const gpsLocation_t * llh) // degrees units
 }
 #endif
 
-void geoSetOrigin(gpsOrigin_s * origin, const gpsLocation_t * llh, geoOriginResetMode_e resetMode)
+void geoSetOrigin(gpsOrigin_t *origin, const gpsLocation_t *llh, geoOriginResetMode_e resetMode)
 {
     if (resetMode == GEO_ORIGIN_SET) {
         origin->valid = true;
@@ -147,27 +147,33 @@ void geoSetOrigin(gpsOrigin_s * origin, const gpsLocation_t * llh, geoOriginRese
     }
 }
 
-void geoConvertGeodeticToLocal(gpsOrigin_s * origin, const gpsLocation_t * llh, t_fp_vector * pos, geoAltitudeConversionMode_e altConv)
+bool geoConvertGeodeticToLocal(fpVector3_t *pos, const gpsOrigin_t *origin, const gpsLocation_t *llh, geoAltitudeConversionMode_e altConv)
 {
     if (origin->valid) {
-        pos->V.X = (llh->lat - origin->lat) * DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR;
-        pos->V.Y = (llh->lon - origin->lon) * (DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR * origin->scale);
+        pos->x = (llh->lat - origin->lat) * DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR;
+        pos->y = (llh->lon - origin->lon) * (DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR * origin->scale);
 
         // If flag GEO_ALT_RELATIVE, than llh altitude is already relative to origin
         if (altConv == GEO_ALT_RELATIVE) {
-            pos->V.Z = llh->alt;
+            pos->z = llh->alt;
         } else {
-            pos->V.Z = llh->alt - origin->alt;
+            pos->z = llh->alt - origin->alt;
         }
+        return true;
     }
-    else {
-        pos->V.X = 0.0f;
-        pos->V.Y = 0.0f;
-        pos->V.Z = 0.0f;
-    }
+
+    pos->x = 0.0f;
+    pos->y = 0.0f;
+    pos->z = 0.0f;
+    return false;
 }
 
-void geoConvertLocalToGeodetic(const gpsOrigin_s * origin, const t_fp_vector * pos, gpsLocation_t * llh)
+bool geoConvertGeodeticToLocalOrigin(fpVector3_t * pos, const gpsLocation_t *llh, geoAltitudeConversionMode_e altConv)
+{
+    return geoConvertGeodeticToLocal(pos, &posControl.gpsOrigin, llh, altConv);
+}
+
+bool geoConvertLocalToGeodetic(gpsLocation_t *llh, const gpsOrigin_t * origin, const fpVector3_t *pos)
 {
     float scaleLonDown;
 
@@ -184,9 +190,10 @@ void geoConvertLocalToGeodetic(const gpsOrigin_s * origin, const t_fp_vector * p
         scaleLonDown = 1.0f;
     }
 
-    llh->lat += lrintf(pos->V.X / DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR);
-    llh->lon += lrintf(pos->V.Y / (DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR * scaleLonDown));
-    llh->alt += lrintf(pos->V.Z);
+    llh->lat += lrintf(pos->x / DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR);
+    llh->lon += lrintf(pos->y / (DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR * scaleLonDown));
+    llh->alt += lrintf(pos->z);
+    return origin->valid;
 }
 
 

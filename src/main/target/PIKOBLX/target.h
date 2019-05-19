@@ -18,7 +18,6 @@
 #pragma once
 
 #define TARGET_BOARD_IDENTIFIER "PIKO" // Furious FPV Piko BLX
-#define USE_CLI
 
 #define CONFIG_FASTLOOP_PREFERRED_ACC ACC_DEFAULT
 
@@ -30,23 +29,20 @@
 
 // MPU6000 interrupts
 #define USE_EXTI
-#define MPU_INT_EXTI            PA15
-#define EXTI15_10_CALLBACK_HANDLER_COUNT 1 // MPU data ready
+#define GYRO_INT_EXTI            PA15
 #define USE_MPU_DATA_READY_SIGNAL
 
-#define GYRO
-#define USE_GYRO_SPI_MPU6000
+#define USE_GYRO
+#define USE_GYRO_MPU6000
 #define GYRO_MPU6000_ALIGN      CW180_DEG
 
-#define ACC
-#define USE_ACC_SPI_MPU6000
+#define USE_ACC
+#define USE_ACC_MPU6000
 #define ACC_MPU6000_ALIGN       CW180_DEG
 
-#define MPU6000_CS_GPIO         GPIOB
 #define MPU6000_CS_PIN          PB12
-#define MPU6000_SPI_INSTANCE    SPI2
+#define MPU6000_SPI_BUS         BUS_SPI2
 
-#define USB_IO
 #define USE_VCP
 #define USE_UART1
 #define USE_UART2
@@ -67,10 +63,9 @@
 
 #define SENSORS_SET             (SENSOR_ACC)
 
-#define TELEMETRY
-#define BLACKBOX
-#define SERIAL_RX
-#define USE_SERVOS
+#define USE_TELEMETRY
+#define USE_BLACKBOX
+#define USE_SERIAL_RX
 
 #define BOARD_HAS_VOLTAGE_DIVIDER
 #define USE_ADC
@@ -82,29 +77,13 @@
 #define VBAT_ADC_CHANNEL                ADC_CHN_2
 #define RSSI_ADC_CHANNEL                ADC_CHN_3
 
-//#define LED_STRIP
-#define USE_LED_STRIP_ON_DMA1_CHANNEL3
+#define USE_LED_STRIP
 #define WS2811_PIN                      PB8 // TIM16_CH1
-#define WS2811_TIMER                    TIM16
-#define WS2811_DMA_STREAM               DMA1_Channel3
-#define WS2811_IRQ                      DMA1_Channel3_IRQn
-#define WS2811_DMA_TC_FLAG              DMA1_FLAG_TC3
-#define WS2811_DMA_HANDLER_IDENTIFER    DMA1_CH3_HANDLER
 
-#define TRANSPONDER
-#define TRANSPONDER_GPIO                     GPIOA
-#define TRANSPONDER_GPIO_AHB_PERIPHERAL      RCC_AHBPeriph_GPIOA
-#define TRANSPONDER_GPIO_AF                  GPIO_AF_6
-#define TRANSPONDER_PIN                      GPIO_Pin_8
-#define TRANSPONDER_PIN_SOURCE               GPIO_PinSource8
-#define TRANSPONDER_TIMER                    TIM1
-#define TRANSPONDER_TIMER_APB2_PERIPHERAL    RCC_APB2Periph_TIM1
-#define TRANSPONDER_DMA_CHANNEL              DMA1_Channel2
-#define TRANSPONDER_IRQ                      DMA1_Channel2_IRQn
-#define TRANSPONDER_DMA_TC_FLAG              DMA1_FLAG_TC2
-#define TRANSPONDER_DMA_HANDLER_IDENTIFER    DMA1_CH2_HANDLER
+// #define USE_TRANSPONDER
+// #define TRANSPONDER_PIN                 PA8
 
-#define SPEKTRUM_BIND
+#define USE_SPEKTRUM_BIND
 // USART3, PB11
 #define BIND_PIN                PB11
 
@@ -115,9 +94,6 @@
 #define TARGET_IO_PORTB         0xffff
 #define TARGET_IO_PORTC         (BIT(13)|BIT(14)|BIT(15))
 #define TARGET_IO_PORTF         (BIT(0)|BIT(1)|BIT(4))
-
-#define USABLE_TIMER_CHANNEL_COUNT 7
-#define USED_TIMERS             (TIM_N(1) | TIM_N(2) | TIM_N(3) | TIM_N(17))
 
 // sn dec06.16 added MAX_PWM_OUTPUT_PORTS: number of available PWM outputs
 // porting inav to PIKO BLX by using betaflight target files from before inav changes to timer.h/timer_def.h

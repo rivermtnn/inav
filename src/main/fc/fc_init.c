@@ -32,6 +32,7 @@
 #include "common/color.h"
 #include "common/maths.h"
 #include "common/printf.h"
+#include "common/memory.h"
 
 #include "config/config_eeprom.h"
 #include "config/feature.h"
@@ -40,6 +41,7 @@
 
 #include "cms/cms.h"
 
+#include "drivers/1-wire.h"
 #include "drivers/accgyro/accgyro.h"
 #include "drivers/adc.h"
 #include "drivers/compass/compass.h"
@@ -47,9 +49,6 @@
 #include "drivers/dma.h"
 #include "drivers/exti.h"
 #include "drivers/flash_m25p16.h"
-#include "drivers/gpio.h"
-#include "drivers/gyro_sync.h"
-#include "drivers/inverter.h"
 #include "drivers/io.h"
 #include "drivers/io_pca9685.h"
 #include "drivers/light_led.h"
@@ -65,12 +64,13 @@
 #include "drivers/serial.h"
 #include "drivers/serial_softserial.h"
 #include "drivers/serial_uart.h"
+#include "drivers/serial_usb_vcp.h"
 #include "drivers/sound_beeper.h"
 #include "drivers/system.h"
 #include "drivers/time.h"
 #include "drivers/timer.h"
+#include "drivers/uart_inverter.h"
 #include "drivers/vcd.h"
-#include "drivers/gyro_sync.h"
 #include "drivers/io.h"
 #include "drivers/exti.h"
 #include "drivers/io_pca9685.h"
@@ -92,11 +92,11 @@
 
 #include "io/asyncfatfs/asyncfatfs.h"
 #include "io/beeper.h"
+#include "io/lights.h"
 #include "io/dashboard.h"
 #include "io/displayport_msp.h"
 #include "io/displayport_max7456.h"
 #include "io/flashfs.h"
-#include "io/gimbal.h"
 #include "io/gps.h"
 #include "io/ledstrip.h"
 #include "io/pwmdriver_i2c.h"
@@ -104,9 +104,12 @@
 #include "io/rcdevice_cam.h"
 #include "io/serial.h"
 #include "io/displayport_msp.h"
+#include "io/vtx.h"
 #include "io/vtx_control.h"
 #include "io/vtx_smartaudio.h"
 #include "io/vtx_tramp.h"
+#include "io/vtx_ffpv24g.h"
+#include "io/piniobox.h"
 
 #include "msp/msp_serial.h"
 
@@ -179,6 +182,7 @@ void init(void)
 
     printfSupportInit();
 
+    // Initialize system and CPU clocks to their initial values
     systemInit();
 
     // initialize IO (needed for all IO operations)
@@ -196,10 +200,9 @@ void init(void)
     ensureEEPROMContainsValidData();
     readEEPROM();
 
-#ifdef USE_UNDERCLOCK
+    // Re-initialize system clock to their final values (if necessary)
     systemClockSetup(systemConfig()->cpuUnderclock);
-#endif
-    
+
     i2cSetSpeed(systemConfig()->i2c_speed);
 
 #ifdef USE_HARDWARE_PREBOOT_SETUP
@@ -226,7 +229,7 @@ void init(void)
 
     addBootlogEvent2(BOOT_EVENT_SYSTEM_INIT_DONE, BOOT_EVENT_FLAGS_NONE);
 
-#ifdef SPEKTRUM_BIND
+#ifdef USE_SPEKTRUM_BIND
     if (rxConfig()->receiverType == RX_TYPE_SERIAL) {
         switch (rxConfig()->serialrx_provider) {
             case SERIALRX_SPEKTRUM1024:
@@ -240,7 +243,10 @@ void init(void)
     }
 #endif
 
-    delay(500);
+#ifdef USE_VCP
+    // Early initialize USB hardware
+    usbVcpInitHardware();
+#endif
 
     timerInit();  // timer must be initialized before any channel is allocated
 
@@ -254,10 +260,19 @@ void init(void)
     serialInit(feature(FEATURE_SOFTSERIAL), SERIAL_PORT_NONE);
 #endif
 
-#ifdef USE_SERVOS
+    // Initialize MSP serial ports here so DEBUG_TRACE can share a port with MSP.
+    // XXX: Don't call mspFcInit() yet, since it initializes the boxes and needs
+    // to run after the sensors have been detected.
+    mspSerialInit();
+
+#if defined(USE_DEBUG_TRACE)
+    // Debug trace uses serial output, so we only can init it after serial port is ready
+    // From this point on we can use DEBUG_TRACE() to produce real-time debugging information
+    debugTraceInit();
+#endif
+
     servosInit();
     mixerUpdateStateFlags();    // This needs to be called early to allow pwm mapper to use information about FIXED_WING state
-#endif
 
     drv_pwm_config_t pwm_params;
     memset(&pwm_params, 0, sizeof(pwm_params));
@@ -275,11 +290,8 @@ void init(void)
 #endif
 
     // when using airplane/wing mixer, servo/motor outputs are remapped
-    pwm_params.flyingPlatformType = getFlyingPlatformType();
+    pwm_params.flyingPlatformType = mixerConfig()->platformType;
 
-#if defined(USE_UART2) && defined(STM32F10X)
-    pwm_params.useUART2 = doesConfigurationUsePort(SERIAL_PORT_USART2);
-#endif
 #ifdef STM32F303xC
     pwm_params.useUART3 = doesConfigurationUsePort(SERIAL_PORT_USART3);
 #endif
@@ -294,17 +306,14 @@ void init(void)
     pwm_params.useParallelPWM = (rxConfig()->receiverType == RX_TYPE_PWM);
     pwm_params.useRSSIADC = feature(FEATURE_RSSI_ADC);
     pwm_params.useCurrentMeterADC = feature(FEATURE_CURRENT_METER)
-        && batteryConfig()->currentMeterType == CURRENT_SENSOR_ADC;
+        && batteryMetersConfig()->current.type == CURRENT_SENSOR_ADC;
     pwm_params.useLEDStrip = feature(FEATURE_LED_STRIP);
     pwm_params.usePPM = (rxConfig()->receiverType == RX_TYPE_PPM);
     pwm_params.useSerialRx = (rxConfig()->receiverType == RX_TYPE_SERIAL);
 
-#ifdef USE_SERVOS
     pwm_params.useServoOutputs = isMixerUsingServos();
-    pwm_params.useChannelForwarding = feature(FEATURE_CHANNEL_FORWARDING);
     pwm_params.servoCenterPulse = servoConfig()->servoCenterPulse;
     pwm_params.servoPwmRate = servoConfig()->servoPwmRate;
-#endif
 
     pwm_params.pwmProtocolType = motorConfig()->motorPwmProtocol;
 #ifndef BRUSHED_MOTORS
@@ -313,15 +322,10 @@ void init(void)
                             (motorConfig()->motorPwmProtocol == PWM_TYPE_MULTISHOT);
 #endif
     pwm_params.motorPwmRate = motorConfig()->motorPwmRate;
-    pwm_params.idlePulse = motorConfig()->mincommand;
-    if (feature(FEATURE_3D)) {
-        pwm_params.idlePulse = flight3DConfig()->neutral3d;
-    }
 
     if (motorConfig()->motorPwmProtocol == PWM_TYPE_BRUSHED) {
         pwm_params.useFastPwm = false;
         featureClear(FEATURE_3D);
-        pwm_params.idlePulse = 0; // brushed motors
     }
 
     pwm_params.enablePWMOutput = feature(FEATURE_PWM_OUTPUT_ENABLE);
@@ -330,14 +334,13 @@ void init(void)
     pwmRxInit(systemConfig()->pwmRxInputFilteringMode);
 #endif
 
-#ifdef USE_PMW_SERVO_DRIVER
+#ifdef USE_PWM_SERVO_DRIVER
     /*
     If external PWM driver is enabled, for example PCA9685, disable internal
     servo handling mechanism, since external device will do that
     */
     if (feature(FEATURE_PWM_SERVO_DRIVER)) {
         pwm_params.useServoOutputs = false;
-        pwm_params.useChannelForwarding = false;
     }
 #endif
 
@@ -364,19 +367,14 @@ void init(void)
 #endif
     };
 
-#if defined(NAZE) && defined(USE_HARDWARE_REVISION_DETECTION)
-    if (hardwareRevision >= NAZE32_REV5) {
-        // naze rev4 and below used opendrain to PNP for buzzer. Rev5 and above use PP to NPN.
-        beeperDevConfig.isOD = false;
-        beeperDevConfig.isInverted = true;
-    }
-#endif
-
     beeperInit(&beeperDevConfig);
 #endif
+#ifdef USE_LIGHTS
+    lightsInit();
+#endif
 
-#ifdef USE_INVERTER
-    initInverters();
+#ifdef USE_UART_INVERTER
+    uartInverterInit();
 #endif
 
     // Initialize buses
@@ -422,23 +420,41 @@ void init(void)
 #endif
 
 #ifdef USE_I2C
-#if defined(I2C_DEVICE)
-    #if defined(I2C_DEVICE_SHARES_UART3)
+#ifdef USE_I2C_DEVICE_1
+    #ifdef I2C_DEVICE_1_SHARES_UART3
         if (!doesConfigurationUsePort(SERIAL_PORT_USART3)) {
-            i2cInit(I2C_DEVICE);
+            i2cInit(I2CDEV_1);
         }
     #else
-        i2cInit(I2C_DEVICE);
+            i2cInit(I2CDEV_1);
     #endif
 #endif
 
-#if defined(I2C_DEVICE_EXT)
-    #if defined(I2C_DEVICE_EXT_SHARES_UART3)
+#ifdef USE_I2C_DEVICE_2
+    #ifdef I2C_DEVICE_2_SHARES_UART3
         if (!doesConfigurationUsePort(SERIAL_PORT_USART3)) {
-            i2cInit(I2C_DEVICE_EXT);
+            i2cInit(I2CDEV_2);
         }
     #else
-        i2cInit(I2C_DEVICE_EXT);
+            i2cInit(I2CDEV_2);
+    #endif
+#endif
+
+#ifdef USE_I2C_DEVICE_3
+    i2cInit(I2CDEV_3);
+#endif
+
+#ifdef USE_I2C_DEVICE_4
+    i2cInit(I2CDEV_4);
+#endif
+
+#ifdef USE_I2C_DEVICE_EMULATED
+    #ifdef I2C_DEVICE_EMULATED_SHARES_UART3
+        if (!doesConfigurationUsePort(SERIAL_PORT_USART3)) {
+            i2cInit(I2CDEV_EMULATED);
+        }
+    #else
+            i2cInit(I2CDEV_EMULATED);
     #endif
 #endif
 #endif
@@ -456,11 +472,11 @@ void init(void)
         adc_params.adcFunctionChannel[ADC_RSSI] = adcChannelConfig()->adcFunctionChannel[ADC_RSSI];
     }
 
-    if (feature(FEATURE_CURRENT_METER) && batteryConfig()->currentMeterType == CURRENT_SENSOR_ADC) {
+    if (feature(FEATURE_CURRENT_METER) && batteryMetersConfig()->current.type == CURRENT_SENSOR_ADC) {
         adc_params.adcFunctionChannel[ADC_CURRENT] =  adcChannelConfig()->adcFunctionChannel[ADC_CURRENT];
     }
 
-#if defined(PITOT) && defined(USE_PITOT_ADC)
+#if defined(USE_PITOT) && defined(USE_ADC) && defined(USE_PITOT_ADC)
     if (pitotmeterConfig()->pitot_hardware == PITOT_ADC || pitotmeterConfig()->pitot_hardware == PITOT_AUTODETECT) {
         adc_params.adcFunctionChannel[ADC_AIRSPEED] = adcChannelConfig()->adcFunctionChannel[ADC_AIRSPEED];
     }
@@ -469,8 +485,18 @@ void init(void)
     adcInit(&adc_params);
 #endif
 
+#ifdef USE_PINIO
+    pinioInit();
+#endif
+
+#ifdef USE_PINIOBOX
+    pinioBoxInit();
+#endif
+
+#if defined(USE_GPS) || defined(USE_MAG)
+    delay(500);
+
     /* Extra 500ms delay prior to initialising hardware if board is cold-booting */
-#if defined(GPS) || defined(MAG)
     if (!isMPUSoftReset()) {
         addBootlogEvent2(BOOT_EVENT_EXTRA_BOOT_DELAY, BOOT_EVENT_FLAGS_NONE);
 
@@ -490,7 +516,7 @@ void init(void)
 
     initBoardAlignment();
 
-#ifdef CMS
+#ifdef USE_CMS
     cmsInit();
 #endif
 
@@ -500,10 +526,15 @@ void init(void)
     }
 #endif
 
-#ifdef GPS
+#ifdef USE_GPS
     if (feature(FEATURE_GPS)) {
         gpsPreInit();
     }
+#endif
+
+    // 1-Wire IF chip
+#ifdef USE_1WIRE
+    owInit();
 #endif
 
     if (!sensorsAutodetect()) {
@@ -516,34 +547,29 @@ void init(void)
 
     flashLedsAndBeep();
 
-#ifdef USE_DTERM_NOTCH
     pidInitFilters();
-#endif
 
     imuInit();
 
+    // Sensors have now been detected, mspFcInit() can now be called
+    // to set the boxes up
     mspFcInit();
-    mspSerialInit();
 
-#ifdef USE_CLI
     cliInit(serialConfig());
-#endif
 
     failsafeInit();
 
     rxInit();
 
-#if (defined(OSD) || (defined(USE_MSP_DISPLAYPORT) && defined(CMS)))
+#if (defined(USE_OSD) || (defined(USE_MSP_DISPLAYPORT) && defined(USE_CMS)))
     displayPort_t *osdDisplayPort = NULL;
 #endif
 
-#ifdef OSD
+#ifdef USE_OSD
     if (feature(FEATURE_OSD)) {
 #if defined(USE_MAX7456)
         // If there is a max7456 chip for the OSD then use it
-        static vcdProfile_t vcdProfile;
-        vcdProfile.video_system = osdConfig()->video_system;
-        osdDisplayPort = max7456DisplayPortInit(&vcdProfile);
+        osdDisplayPort = max7456DisplayPortInit(osdConfig()->video_system);
 #elif defined(USE_OSD_OVER_MSP_DISPLAYPORT) // OSD over MSP; not supported (yet)
         osdDisplayPort = displayPortMspInit();
 #endif
@@ -552,7 +578,7 @@ void init(void)
     }
 #endif
 
-#if defined(USE_MSP_DISPLAYPORT) && defined(CMS)
+#if defined(USE_MSP_DISPLAYPORT) && defined(USE_CMS)
     // If OSD is not active, then register MSP_DISPLAYPORT as a CMS device.
     if (!osdDisplayPort) {
         cmsDisplayPortRegister(displayPortMspInit());
@@ -563,7 +589,7 @@ void init(void)
     uavInterconnectBusInit();
 #endif
 
-#ifdef GPS
+#ifdef USE_GPS
     if (feature(FEATURE_GPS)) {
         gpsInit();
         addBootlogEvent2(BOOT_EVENT_GPS_INIT_DONE, BOOT_EVENT_FLAGS_NONE);
@@ -571,11 +597,11 @@ void init(void)
 #endif
 
 
-#ifdef NAV
+#ifdef USE_NAV
     navigationInit();
 #endif
 
-#ifdef LED_STRIP
+#ifdef USE_LED_STRIP
     ledStripInit();
 
     if (feature(FEATURE_LED_STRIP)) {
@@ -584,7 +610,7 @@ void init(void)
     }
 #endif
 
-#ifdef TELEMETRY
+#ifdef USE_TELEMETRY
     if (feature(FEATURE_TELEMETRY)) {
         telemetryInit();
         addBootlogEvent2(BOOT_EVENT_TELEMETRY_INIT_DONE, BOOT_EVENT_FLAGS_NONE);
@@ -592,83 +618,57 @@ void init(void)
 #endif
 
 #ifdef USE_FLASHFS
-#ifdef NAZE
-    if (hardwareRevision == NAZE32_REV5) {
-        m25p16_init(IOTAG_NONE);
-    }
-#elif defined(USE_FLASH_M25P16)
-    m25p16_init(IOTAG_NONE);
+#ifdef USE_FLASH_M25P16
+    m25p16_init(0);
 #endif
 
     flashfsInit();
 #endif
 
 #ifdef USE_SDCARD
-    bool sdcardUseDMA = false;
-
     sdcardInsertionDetectInit();
-
-#ifdef SDCARD_DMA_CHANNEL_TX
-
-#if defined(LED_STRIP) && defined(WS2811_DMA_CHANNEL)
-    // Ensure the SPI Tx DMA doesn't overlap with the led strip
-#if defined(STM32F4) || defined(STM32F7)
-    sdcardUseDMA = !feature(FEATURE_LED_STRIP) || SDCARD_DMA_CHANNEL_TX != WS2811_DMA_STREAM;
-#else
-    sdcardUseDMA = !feature(FEATURE_LED_STRIP) || SDCARD_DMA_CHANNEL_TX != WS2811_DMA_CHANNEL;
-#endif
-#else
-    sdcardUseDMA = true;
-#endif
-
-#endif
-
-    sdcard_init(sdcardUseDMA);
-
+    sdcard_init();
     afatfs_init();
 #endif
 
-#ifdef BLACKBOX
+#ifdef USE_BLACKBOX
     blackboxInit();
 #endif
 
-    gyroSetCalibrationCycles(CALIBRATING_GYRO_CYCLES);
-#ifdef BARO
+    gyroStartCalibration();
+
+#ifdef USE_BARO
     baroStartCalibration();
 #endif
 
-#ifdef PITOT
+#ifdef USE_PITOT
     pitotStartCalibration();
 #endif
 
-#ifdef VTX_CONTROL
+#if defined(USE_VTX_CONTROL)
     vtxControlInit();
-
     vtxCommonInit();
+    vtxInit();
 
-#ifdef VTX_SMARTAUDIO
+#ifdef USE_VTX_SMARTAUDIO
     vtxSmartAudioInit();
 #endif
 
-#ifdef VTX_TRAMP
+#ifdef USE_VTX_TRAMP
     vtxTrampInit();
 #endif
 
-#endif // VTX_CONTROL
+#ifdef USE_VTX_FFPV
+    vtxFuriousFPVInit();
+#endif
 
-    // start all timers
-    // TODO - not implemented yet
-    timerStart();
+#endif // USE_VTX_CONTROL
 
     // Now that everything has powered up the voltage and cell count be determined.
     if (feature(FEATURE_VBAT | FEATURE_CURRENT_METER))
         batteryInit();
 
-#ifdef CJMCU
-    LED2_ON;
-#endif
-
-#ifdef USE_PMW_SERVO_DRIVER
+#ifdef USE_PWM_SERVO_DRIVER
     if (feature(FEATURE_PWM_SERVO_DRIVER)) {
         pwmDriverInitialize();
     }

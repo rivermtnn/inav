@@ -19,9 +19,12 @@
 
 #define DISTANCE_BETWEEN_TWO_LONGITUDE_POINTS_AT_EQUATOR    1.113195f  // MagicEarthNumber from APM
 
-#if defined(NAV)
+#if defined(USE_NAV)
 
+#include "common/axis.h"
+#include "common/maths.h"
 #include "common/filter.h"
+#include "common/time.h"
 #include "fc/runtime_config.h"
 
 #define MIN_POSITION_UPDATE_RATE_HZ         5       // Minimum position update rate at which XYZ controllers would be applied
@@ -34,13 +37,6 @@
 #define NAV_ACCELERATION_XY_MAX             980.0f  // cm/s/s       // approx 45 deg lean angle
 
 #define INAV_SURFACE_MAX_DISTANCE           40
-
-#define HZ2US(hz)   (1000000 / (hz))
-#define US2S(us)    ((us) * 1e-6f)
-#define US2MS(us)   ((us) * 1e-3f)
-#define MS2US(ms)   ((ms) * 1000)
-#define MS2S(ms)    ((ms) * 1e-3f)
-#define HZ2S(hz)    US2S(HZ2US(hz))
 
 typedef enum {
     NAV_POS_UPDATE_NONE                 = 0,
@@ -56,19 +52,33 @@ typedef enum {
     ROC_TO_ALT_NORMAL
 } climbRateToAltitudeControllerMode_e;
 
+typedef enum {
+    EST_NONE = 0,       // No valid sensor present
+    EST_USABLE = 1,     // Estimate is usable but may be inaccurate
+    EST_TRUSTED = 2     // Estimate is usable and based on actual sensor data
+} navigationEstimateStatus_e;
+
+typedef enum {
+    NAV_HOME_INVALID = 0,
+    NAV_HOME_VALID_XY = 1 << 0,
+    NAV_HOME_VALID_Z = 1 << 1,
+    NAV_HOME_VALID_HEADING = 1 << 2,
+    NAV_HOME_VALID_ALL = NAV_HOME_VALID_XY | NAV_HOME_VALID_Z | NAV_HOME_VALID_HEADING,
+} navigationHomeFlags_t;
+
 typedef struct navigationFlags_s {
     bool horizontalPositionDataNew;
     bool verticalPositionDataNew;
-    bool surfaceDistanceDataNew;
     bool headingDataNew;
 
     bool horizontalPositionDataConsumed;
     bool verticalPositionDataConsumed;
 
-    bool hasValidAltitudeSensor;        // Indicates that we have a working altitude sensor (got at least one valid reading from it)
-    bool hasValidPositionSensor;        // Indicates that GPS is working (or not)
-    bool hasValidSurfaceSensor;
-    bool hasValidHeadingSensor;         // Indicate valid heading - wither mag or GPS at certain speed on airplane
+    navigationEstimateStatus_e estAltStatus;        // Indicates that we have a working altitude sensor (got at least one valid reading from it)
+    navigationEstimateStatus_e estPosStatus;        // Indicates that GPS is working (or not)
+    navigationEstimateStatus_e estVelStatus;        // Indicates that GPS is working (or not)
+    navigationEstimateStatus_e estAglStatus;
+    navigationEstimateStatus_e estHeadingStatus;    // Indicate valid heading - wither mag or GPS at certain speed on airplane
 
     bool isAdjustingPosition;
     bool isAdjustingAltitude;
@@ -82,17 +92,6 @@ typedef struct navigationFlags_s {
     bool forcedRTHActivated;
 } navigationFlags_t;
 
-typedef struct {
-    float kP;
-    float kI;
-    float kD;
-    float kT;   // Tracking gain (anti-windup)
-} pidControllerParam_t;
-
-typedef struct {
-    float kP;
-} pControllerParam_t;
-
 typedef enum {
     PID_DTERM_FROM_ERROR            = 1 << 0,
     PID_ZERO_INTEGRATOR             = 1 << 1,
@@ -100,44 +99,27 @@ typedef enum {
 } pidControllerFlags_e;
 
 typedef struct {
-    pidControllerParam_t param;
-    pt1Filter_t dterm_filter_state;  // last derivative for low-pass filter
-    float integrator;       // integrator value
-    float last_input;       // last input for derivative
-} pidController_t;
+    fpVector3_t pos;
+    fpVector3_t vel;
+} navEstimatedPosVel_t;
 
 typedef struct {
-    pControllerParam_t param;
-} pController_t;
+    // Local estimated states
+    navEstimatedPosVel_t    abs;
+    navEstimatedPosVel_t    agl;
+    int32_t                 yaw;
 
-typedef struct navigationPIDControllers_s {
-    /* Multicopter PIDs */
-    pController_t   pos[XYZ_AXIS_COUNT];
-    pidController_t vel[XYZ_AXIS_COUNT];
-    pidController_t surface;
-
-    /* Fixed-wing PIDs */
-    pidController_t fw_alt;
-    pidController_t fw_nav;
-} navigationPIDControllers_t;
-
-typedef struct {
-    t_fp_vector pos;
-    t_fp_vector vel;
-    int32_t     yaw;
-    float       sinYaw;
-    float       cosYaw;
-    float       surface;
-    float       surfaceVel;
-    float       surfaceMin;
-    float       velXY;
+    // Service values
+    float                   sinYaw;
+    float                   cosYaw;
+    float                   surfaceMin;
+    float                   velXY;
 } navigationEstimatedState_t;
 
 typedef struct {
-    t_fp_vector pos;
-    t_fp_vector vel;
+    fpVector3_t pos;
+    fpVector3_t vel;
     int32_t     yaw;
-    float       surface;
 } navigationDesiredState_t;
 
 typedef enum {
@@ -149,9 +131,9 @@ typedef enum {
 
     NAV_FSM_EVENT_SWITCH_TO_IDLE,
     NAV_FSM_EVENT_SWITCH_TO_ALTHOLD,
-    NAV_FSM_EVENT_SWITCH_TO_POSHOLD_2D,
     NAV_FSM_EVENT_SWITCH_TO_POSHOLD_3D,
     NAV_FSM_EVENT_SWITCH_TO_RTH,
+    NAV_FSM_EVENT_SWITCH_TO_RTH_HOVER_ABOVE_HOME,
     NAV_FSM_EVENT_SWITCH_TO_WAYPOINT,
     NAV_FSM_EVENT_SWITCH_TO_EMERGENCY_LANDING,
     NAV_FSM_EVENT_SWITCH_TO_LAUNCH,
@@ -162,47 +144,105 @@ typedef enum {
     NAV_FSM_EVENT_SWITCH_TO_WAYPOINT_RTH_LAND = NAV_FSM_EVENT_STATE_SPECIFIC_1,
     NAV_FSM_EVENT_SWITCH_TO_WAYPOINT_FINISHED = NAV_FSM_EVENT_STATE_SPECIFIC_2,
 
+    NAV_FSM_EVENT_SWITCH_TO_CRUISE_2D,
+    NAV_FSM_EVENT_SWITCH_TO_CRUISE_3D,
+    NAV_FSM_EVENT_SWITCH_TO_CRUISE_ADJ,
     NAV_FSM_EVENT_COUNT,
 } navigationFSMEvent_t;
 
+// This enum is used to keep values in blackbox logs stable, so we can
+// freely change navigationFSMState_t.
 typedef enum {
-    NAV_STATE_UNDEFINED = 0,                    // 0
+    NAV_PERSISTENT_ID_UNDEFINED                                 = 0,
 
-    NAV_STATE_IDLE,                             // 1
+    NAV_PERSISTENT_ID_IDLE                                      = 1,
 
-    NAV_STATE_ALTHOLD_INITIALIZE,               // 2
-    NAV_STATE_ALTHOLD_IN_PROGRESS,              // 3
+    NAV_PERSISTENT_ID_ALTHOLD_INITIALIZE                        = 2,
+    NAV_PERSISTENT_ID_ALTHOLD_IN_PROGRESS                       = 3,
 
-    NAV_STATE_POSHOLD_2D_INITIALIZE,            // 4
-    NAV_STATE_POSHOLD_2D_IN_PROGRESS,           // 5
+    NAV_PERSISTENT_ID_UNUSED_1                                  = 4,  // was NAV_STATE_POSHOLD_2D_INITIALIZE
+    NAV_PERSISTENT_ID_UNUSED_2                                  = 5,  // was NAV_STATE_POSHOLD_2D_IN_PROGRESS
 
-    NAV_STATE_POSHOLD_3D_INITIALIZE,            // 6
-    NAV_STATE_POSHOLD_3D_IN_PROGRESS,           // 7
+    NAV_PERSISTENT_ID_POSHOLD_3D_INITIALIZE                     = 6,
+    NAV_PERSISTENT_ID_POSHOLD_3D_IN_PROGRESS                    = 7,
 
-    NAV_STATE_RTH_INITIALIZE,                // 8
-    NAV_STATE_RTH_CLIMB_TO_SAFE_ALT,         // 9
-    NAV_STATE_RTH_HEAD_HOME,                 // 10
-    NAV_STATE_RTH_HOVER_PRIOR_TO_LANDING,    // 11
-    NAV_STATE_RTH_LANDING,                   // 12
-    NAV_STATE_RTH_FINISHING,                 // 13
-    NAV_STATE_RTH_FINISHED,                  // 14
+    NAV_PERSISTENT_ID_RTH_INITIALIZE                            = 8,
+    NAV_PERSISTENT_ID_RTH_CLIMB_TO_SAFE_ALT                     = 9,
+    NAV_PERSISTENT_ID_RTH_HEAD_HOME                             = 10,
+    NAV_PERSISTENT_ID_RTH_HOVER_PRIOR_TO_LANDING                = 11,
+    NAV_PERSISTENT_ID_RTH_HOVER_ABOVE_HOME                      = 29,
+    NAV_PERSISTENT_ID_RTH_LANDING                               = 12,
+    NAV_PERSISTENT_ID_RTH_FINISHING                             = 13,
+    NAV_PERSISTENT_ID_RTH_FINISHED                              = 14,
 
-    NAV_STATE_WAYPOINT_INITIALIZE,              // 15
-    NAV_STATE_WAYPOINT_PRE_ACTION,              // 16
-    NAV_STATE_WAYPOINT_IN_PROGRESS,             // 17
-    NAV_STATE_WAYPOINT_REACHED,                 // 18
-    NAV_STATE_WAYPOINT_NEXT,                    // 19
-    NAV_STATE_WAYPOINT_FINISHED,                // 20
-    NAV_STATE_WAYPOINT_RTH_LAND,                // 21
+    NAV_PERSISTENT_ID_WAYPOINT_INITIALIZE                       = 15,
+    NAV_PERSISTENT_ID_WAYPOINT_PRE_ACTION                       = 16,
+    NAV_PERSISTENT_ID_WAYPOINT_IN_PROGRESS                      = 17,
+    NAV_PERSISTENT_ID_WAYPOINT_REACHED                          = 18,
+    NAV_PERSISTENT_ID_WAYPOINT_NEXT                             = 19,
+    NAV_PERSISTENT_ID_WAYPOINT_FINISHED                         = 20,
+    NAV_PERSISTENT_ID_WAYPOINT_RTH_LAND                         = 21,
 
-    NAV_STATE_EMERGENCY_LANDING_INITIALIZE,     // 22
-    NAV_STATE_EMERGENCY_LANDING_IN_PROGRESS,    // 23
-    NAV_STATE_EMERGENCY_LANDING_FINISHED,       // 24
+    NAV_PERSISTENT_ID_EMERGENCY_LANDING_INITIALIZE              = 22,
+    NAV_PERSISTENT_ID_EMERGENCY_LANDING_IN_PROGRESS             = 23,
+    NAV_PERSISTENT_ID_EMERGENCY_LANDING_FINISHED                = 24,
 
-    NAV_STATE_LAUNCH_INITIALIZE,                // 25
-    NAV_STATE_LAUNCH_WAIT,                      // 26
-    NAV_STATE_LAUNCH_MOTOR_DELAY,               // 27
-    NAV_STATE_LAUNCH_IN_PROGRESS,               // 28
+    NAV_PERSISTENT_ID_LAUNCH_INITIALIZE                         = 25,
+    NAV_PERSISTENT_ID_LAUNCH_WAIT                               = 26,
+    NAV_PERSISTENT_ID_UNUSED_3                                  = 27, // was NAV_STATE_LAUNCH_MOTOR_DELAY
+    NAV_PERSISTENT_ID_LAUNCH_IN_PROGRESS                        = 28,
+
+    NAV_PERSISTENT_ID_CRUISE_2D_INITIALIZE                      = 29,
+    NAV_PERSISTENT_ID_CRUISE_2D_IN_PROGRESS                     = 30,
+    NAV_PERSISTENT_ID_CRUISE_2D_ADJUSTING                       = 31,
+
+    NAV_PERSISTENT_ID_CRUISE_3D_INITIALIZE                      = 32,
+    NAV_PERSISTENT_ID_CRUISE_3D_IN_PROGRESS                     = 33,
+    NAV_PERSISTENT_ID_CRUISE_3D_ADJUSTING                       = 34,
+} navigationPersistentId_e;
+
+typedef enum {
+    NAV_STATE_UNDEFINED = 0,
+
+    NAV_STATE_IDLE,
+
+    NAV_STATE_ALTHOLD_INITIALIZE,
+    NAV_STATE_ALTHOLD_IN_PROGRESS,
+
+    NAV_STATE_POSHOLD_3D_INITIALIZE,
+    NAV_STATE_POSHOLD_3D_IN_PROGRESS,
+
+    NAV_STATE_RTH_INITIALIZE,
+    NAV_STATE_RTH_CLIMB_TO_SAFE_ALT,
+    NAV_STATE_RTH_HEAD_HOME,
+    NAV_STATE_RTH_HOVER_PRIOR_TO_LANDING,
+    NAV_STATE_RTH_HOVER_ABOVE_HOME,
+    NAV_STATE_RTH_LANDING,
+    NAV_STATE_RTH_FINISHING,
+    NAV_STATE_RTH_FINISHED,
+
+    NAV_STATE_WAYPOINT_INITIALIZE,
+    NAV_STATE_WAYPOINT_PRE_ACTION,
+    NAV_STATE_WAYPOINT_IN_PROGRESS,
+    NAV_STATE_WAYPOINT_REACHED,
+    NAV_STATE_WAYPOINT_NEXT,
+    NAV_STATE_WAYPOINT_FINISHED,
+    NAV_STATE_WAYPOINT_RTH_LAND,
+
+    NAV_STATE_EMERGENCY_LANDING_INITIALIZE,
+    NAV_STATE_EMERGENCY_LANDING_IN_PROGRESS,
+    NAV_STATE_EMERGENCY_LANDING_FINISHED,
+
+    NAV_STATE_LAUNCH_INITIALIZE,
+    NAV_STATE_LAUNCH_WAIT,
+    NAV_STATE_LAUNCH_IN_PROGRESS,
+
+    NAV_STATE_CRUISE_2D_INITIALIZE,
+    NAV_STATE_CRUISE_2D_IN_PROGRESS,
+    NAV_STATE_CRUISE_2D_ADJUSTING,
+    NAV_STATE_CRUISE_3D_INITIALIZE,
+    NAV_STATE_CRUISE_3D_IN_PROGRESS,
+    NAV_STATE_CRUISE_3D_ADJUSTING,
 
     NAV_STATE_COUNT,
 } navigationFSMState_t;
@@ -235,6 +275,7 @@ typedef enum {
 } navigationFSMStateFlags_t;
 
 typedef struct {
+    navigationPersistentId_e            persistentId;
     navigationFSMEvent_t                (*onEntry)(navigationFSMState_t previousState);
     uint32_t                            timeoutMs;
     navSystemStatus_State_e             mwState;
@@ -246,13 +287,21 @@ typedef struct {
 
 typedef struct {
     timeMs_t        lastCheckTime;
-    t_fp_vector     initialPosition;
+    fpVector3_t     initialPosition;
     float           minimalDistanceToHome;
 } rthSanityChecker_t;
 
 typedef struct {
+    fpVector3_t                 targetPos;
+    int32_t                     yaw;
+    int32_t                     previousYaw;
+    timeMs_t                    lastYawAdjustmentTime;
+} navCruise_t;
+
+typedef struct {
     /* Flags and navigation system state */
     navigationFSMState_t        navState;
+    navigationPersistentId_e    navPersistentId;
 
     navigationFlags_t           flags;
 
@@ -269,15 +318,19 @@ typedef struct {
     uint32_t                    lastValidAltitudeTimeMs;
 
     /* INAV GPS origin (position where GPS fix was first acquired) */
-    gpsOrigin_s                 gpsOrigin;
+    gpsOrigin_t                 gpsOrigin;
 
     /* Home parameters (NEU coordinated), geodetic position of home (LLH) is stores in GPS_home variable */
     rthSanityChecker_t          rthSanityChecker;
     navWaypointPosition_t       homePosition;       // Special waypoint, stores original yaw (heading when launched)
     navWaypointPosition_t       homeWaypointAbove;  // NEU-coordinates and initial bearing + desired RTH altitude
+    navigationHomeFlags_t       homeFlags;
 
     uint32_t                    homeDistance;   // cm
     int32_t                     homeDirection;  // deg*100
+
+    /* Cruise */
+    navCruise_t                 cruise;
 
     /* Waypoint list */
     navWaypoint_t               waypointList[NAV_MAX_WAYPOINTS];
@@ -295,6 +348,8 @@ typedef struct {
 extern navigationPosControl_t posControl;
 
 /* Internally used functions */
+const navEstimatedPosVel_t * navGetCurrentActualPositionAndVelocity(void);
+
 float navPidApply2(pidController_t *pid, const float setpoint, const float measurement, const float dt, const float outMin, const float outMax, const pidControllerFlags_e pidFlags);
 float navPidApply3(pidController_t *pid, const float setpoint, const float measurement, const float dt, const float outMin, const float outMax, const pidControllerFlags_e pidFlags, const float gainScaler);
 void navPidReset(pidController_t *pid);
@@ -302,15 +357,15 @@ void navPidInit(pidController_t *pid, float _kP, float _kI, float _kD);
 void navPInit(pController_t *p, float _kP);
 
 bool isThrustFacingDownwards(void);
-uint32_t calculateDistanceToDestination(const t_fp_vector * destinationPos);
-int32_t calculateBearingToDestination(const t_fp_vector * destinationPos);
+uint32_t calculateDistanceToDestination(const fpVector3_t * destinationPos);
+int32_t calculateBearingToDestination(const fpVector3_t * destinationPos);
 void resetLandingDetector(void);
 bool isLandingDetected(void);
 
 navigationFSMStateFlags_t navGetCurrentStateFlags(void);
 
-void setHomePosition(const t_fp_vector * pos, int32_t yaw, navSetWaypointFlags_t useMask);
-void setDesiredPosition(const t_fp_vector * pos, int32_t yaw, navSetWaypointFlags_t useMask);
+void setHomePosition(const fpVector3_t * pos, int32_t yaw, navSetWaypointFlags_t useMask, navigationHomeFlags_t homeFlags);
+void setDesiredPosition(const fpVector3_t * pos, int32_t yaw, navSetWaypointFlags_t useMask);
 void setDesiredSurfaceOffset(float surfaceOffset);
 void setDesiredPositionToFarAwayTarget(int32_t yaw, int32_t distance, navSetWaypointFlags_t useMask);
 void updateClimbRateToAltitudeController(float desiredClimbRate, climbRateToAltitudeControllerMode_e mode);
@@ -320,10 +375,9 @@ bool isWaypointMissed(const navWaypointPosition_t * waypoint);
 bool isApproachingLastWaypoint(void);
 float getActiveWaypointSpeed(void);
 
-void updateActualHeading(int32_t newHeading);
-void updateActualHorizontalPositionAndVelocity(bool hasValidSensor, float newX, float newY, float newVelX, float newVelY);
-void updateActualAltitudeAndClimbRate(bool hasValidSensor, float newAltitude, float newVelocity);
-void updateActualSurfaceDistance(bool hasValidSensor, float surfaceDistance, float surfaceVelocity);
+void updateActualHeading(bool headingValid, int32_t newHeading);
+void updateActualHorizontalPositionAndVelocity(bool estPosValid, bool estVelValid, float newX, float newY, float newVelX, float newVelY);
+void updateActualAltitudeAndClimbRate(bool estimateValid, float newAltitude, float newVelocity, float surfaceDistance, float surfaceVelocity, navigationEstimateStatus_e surfaceStatus);
 
 bool checkForPositionSensorTimeout(void);
 
@@ -335,10 +389,11 @@ void setupMulticopterAltitudeController(void);
 void resetMulticopterAltitudeController(void);
 void resetMulticopterPositionController(void);
 void resetMulticopterHeadingController(void);
+void resetMulticopterBrakingMode(void);
 
 bool adjustMulticopterAltitudeFromRCInput(void);
 bool adjustMulticopterHeadingFromRCInput(void);
-bool adjustMulticopterPositionFromRCInput(void);
+bool adjustMulticopterPositionFromRCInput(int16_t rcPitchAdjustment, int16_t rcRollAdjustment);
 
 void applyMulticopterNavigationController(navigationFSMStateFlags_t navStateFlags, timeUs_t currentTimeUs);
 
@@ -348,7 +403,7 @@ void resetMulticopterLandingDetector(void);
 bool isMulticopterLandingDetected(void);
 bool isFixedWingLandingDetected(void);
 
-void calculateMulticopterInitialHoldPosition(t_fp_vector * pos);
+void calculateMulticopterInitialHoldPosition(fpVector3_t * pos);
 
 /* Fixed-wing specific functions */
 void setupFixedWingAltitudeController(void);
@@ -363,13 +418,14 @@ bool adjustFixedWingPositionFromRCInput(void);
 
 void applyFixedWingNavigationController(navigationFSMStateFlags_t navStateFlags, timeUs_t currentTimeUs);
 
-void calculateFixedWingInitialHoldPosition(t_fp_vector * pos);
+void calculateFixedWingInitialHoldPosition(fpVector3_t * pos);
 
 /* Fixed-wing launch controller */
 void resetFixedWingLaunchController(timeUs_t currentTimeUs);
 bool isFixedWingLaunchDetected(void);
 void enableFixedWingLaunchController(timeUs_t currentTimeUs);
 bool isFixedWingLaunchFinishedOrAborted(void);
+void abortFixedWingLaunch(void);
 void applyFixedWingLaunchController(timeUs_t currentTimeUs);
 
 #endif

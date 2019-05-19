@@ -18,9 +18,18 @@
 #pragma once
 
 #include "common/axis.h"
+#include "common/maths.h"
+#include "common/vector.h"
 #include "config/parameter_group.h"
 #include "drivers/accgyro/accgyro.h"
 #include "sensors/sensors.h"
+
+#define GRAVITY_CMSS    980.665f
+#define GRAVITY_MSS     9.80665f
+
+#define ACC_CLIPPING_THRESHOLD_G        7.9f
+#define ACC_VIBE_FLOOR_FILT_HZ          5.0f
+#define ACC_VIBE_FILT_HZ                2.0f
 
 // Type of accelerometer used/detected
 typedef enum {
@@ -34,14 +43,18 @@ typedef enum {
     ACC_MPU6000 = 7,
     ACC_MPU6500 = 8,
     ACC_MPU9250 = 9,
-    ACC_FAKE = 10,
+    ACC_BMI160 = 10,
+    ACC_ICM20689 = 11,
+    ACC_FAKE = 12,
     ACC_MAX = ACC_FAKE
 } accelerationSensor_e;
 
 typedef struct acc_s {
     accDev_t dev;
     uint32_t accTargetLooptime;
-    int32_t accADC[XYZ_AXIS_COUNT];
+    float accADCf[XYZ_AXIS_COUNT]; // acceleration in g
+    float accVibeSq[XYZ_AXIS_COUNT];
+    uint32_t accClipCount;
 } acc_t;
 
 extern acc_t acc;
@@ -60,7 +73,11 @@ PG_DECLARE(accelerometerConfig_t, accelerometerConfig);
 
 bool accInit(uint32_t accTargetLooptime);
 bool accIsCalibrationComplete(void);
-void accSetCalibrationCycles(uint16_t calibrationCyclesRequired);
+void accStartCalibration(void);
+void accGetMeasuredAcceleration(fpVector3_t *measuredAcc);
+void accGetVibrationLevels(fpVector3_t *accVibeLevels);
+float accGetVibrationLevel(void);
+uint32_t accGetClipCount(void);
 void accUpdate(void);
 void accSetCalibrationValues(void);
 void accInitFilters(void);
