@@ -57,11 +57,7 @@ typedef enum {
 
 #define MSP_PORT_INBUF_SIZE 192
 #ifdef USE_FLASHFS
-#ifdef STM32F1
-#define MSP_PORT_DATAFLASH_BUFFER_SIZE 1024
-#else
 #define MSP_PORT_DATAFLASH_BUFFER_SIZE 4096
-#endif
 #define MSP_PORT_DATAFLASH_INFO_SIZE 16
 #define MSP_PORT_OUTBUF_SIZE (MSP_PORT_DATAFLASH_BUFFER_SIZE + MSP_PORT_DATAFLASH_INFO_SIZE)    // WARNING! Must fit in stack!
 #else
@@ -106,5 +102,7 @@ void mspSerialInit(void);
 void mspSerialProcess(mspEvaluateNonMspData_e evaluateNonMspData, mspProcessCommandFnPtr mspProcessCommandFn);
 void mspSerialAllocatePorts(void);
 void mspSerialReleasePortIfAllocated(struct serialPort_s *serialPort);
+int mspSerialPushPort(uint16_t cmd, const uint8_t *data, int datalen, mspPort_t *mspPort, mspVersion_e version);
 int mspSerialPush(uint8_t cmd, const uint8_t *data, int datalen);
 uint32_t mspSerialTxBytesFree(void);
+mspPort_t * mspSerialPortFind(const struct serialPort_s *serialPort);

@@ -27,6 +27,7 @@
 #include "common/axis.h"
 #include "common/filter.h"
 #include "common/maths.h"
+#include "common/utils.h"
 
 #include "config/parameter_group.h"
 #include "config/parameter_group_ids.h"
@@ -34,6 +35,7 @@
 #include "fc/config.h"
 #include "fc/controlrate_profile.h"
 #include "fc/rc_controls.h"
+#include "fc/rc_modes.h"
 #include "fc/runtime_config.h"
 
 #include "flight/pid.h"
@@ -72,17 +74,25 @@ typedef struct {
     float errorGyroIf;
     float errorGyroIfLimit;
 
-    // Used for ANGLE filtering
+    // Used for ANGLE filtering (PT1, we don't need super-sharpness here)
     pt1Filter_t angleFilterState;
 
     // Rate filtering
     rateLimitFilter_t axisAccelFilter;
     pt1Filter_t ptermLpfState;
-    pt1Filter_t deltaLpfState;
+    biquadFilter_t deltaLpfState;
 
     // Dterm notch filtering
 #ifdef USE_DTERM_NOTCH
     biquadFilter_t deltaNotchFilter;
+#endif
+    float stickPosition;
+
+#ifdef USE_D_BOOST
+    float previousRateTarget;
+    float previousRateGyro;
+    pt1Filter_t dBoostLpf;
+    biquadFilter_t dBoostGyroLpf;
 #endif
 } pidState_t;
 
@@ -92,9 +102,11 @@ STATIC_FASTRAM filterApplyFnPtr notchFilterApplyFn;
 
 extern float dT;
 
+STATIC_FASTRAM bool pidFiltersConfigured = false;
 FASTRAM float headingHoldCosZLimit;
 FASTRAM int16_t headingHoldTarget;
 STATIC_FASTRAM pt1Filter_t headingHoldRateFilter;
+STATIC_FASTRAM pt1Filter_t fixedWingTpaFilter;
 
 // Thrust PID Attenuation factor. 0.0f means fully attenuated, 1.0f no attenuation is applied
 STATIC_FASTRAM bool pidGainsUpdateRequired;
@@ -106,76 +118,96 @@ int32_t axisPID_P[FLIGHT_DYNAMICS_INDEX_COUNT], axisPID_I[FLIGHT_DYNAMICS_INDEX_
 
 STATIC_FASTRAM pidState_t pidState[FLIGHT_DYNAMICS_INDEX_COUNT];
 
-PG_REGISTER_PROFILE_WITH_RESET_TEMPLATE(pidProfile_t, pidProfile, PG_PID_PROFILE, 3);
+static EXTENDED_FASTRAM pt1Filter_t windupLpf[XYZ_AXIS_COUNT];
+static EXTENDED_FASTRAM uint8_t itermRelax;
+static EXTENDED_FASTRAM uint8_t itermRelaxType;
+static EXTENDED_FASTRAM float itermRelaxSetpointThreshold;
+
+#define D_BOOST_GYRO_LPF_HZ 80    // Biquad lowpass input cutoff to peak D around propwash frequencies
+#define D_BOOST_LPF_HZ 10         // PT1 lowpass cutoff to smooth the boost effect
+
+#ifdef USE_D_BOOST
+static EXTENDED_FASTRAM float dBoostFactor;
+static EXTENDED_FASTRAM float dBoostMaxAtAlleceleration;
+#endif
+
+PG_REGISTER_PROFILE_WITH_RESET_TEMPLATE(pidProfile_t, pidProfile, PG_PID_PROFILE, 9);
 
 PG_RESET_TEMPLATE(pidProfile_t, pidProfile,
         .bank_mc = {
             .pid = {
-                [PID_ROLL] =    { 40, 30, 23 },
-                [PID_PITCH] =   { 40, 30, 23 },
-                [PID_YAW] =     { 85, 45, 0 },
+                [PID_ROLL] =    { 40, 30, 23, 0 },
+                [PID_PITCH] =   { 40, 30, 23, 0 },
+                [PID_YAW] =     { 85, 45, 0, 0 },
                 [PID_LEVEL] = {
                     .P = 20,    // Self-level strength
                     .I = 15,    // Self-leveing low-pass frequency (0 - disabled)
                     .D = 75,    // 75% horizon strength
+                    .FF = 0,
                 },
-                [PID_HEADING] = { 60, 0, 0 },
+                [PID_HEADING] = { 60, 0, 0, 0 },
                 [PID_POS_XY] = {
                     .P = 65,   // NAV_POS_XY_P * 100
-                    .I = 120,  // posDecelerationTime * 100
-                    .D = 10,   // posResponseExpo * 100
+                    .I = 0,
+                    .D = 0,
+                    .FF = 0,
                 },
                 [PID_VEL_XY] = {
                     .P = 40,   // NAV_VEL_XY_P * 20
                     .I = 15,   // NAV_VEL_XY_I * 100
                     .D = 100,  // NAV_VEL_XY_D * 100
+                    .FF = 40,  // NAV_VEL_XY_D * 100
                 },
                 [PID_POS_Z] = {
                     .P = 50,    // NAV_POS_Z_P * 100
                     .I = 0,     // not used
                     .D = 0,     // not used
+                    .FF = 0,
                 },
                 [PID_VEL_Z] = {
-                    .P = 100,   // NAV_VEL_Z_P * 100
-                    .I = 50,    // NAV_VEL_Z_I * 100
+                    .P = 100,   // NAV_VEL_Z_P * 66.7
+                    .I = 50,    // NAV_VEL_Z_I * 20
                     .D = 10,    // NAV_VEL_Z_D * 100
+                    .FF = 0,
                 }
             }
         },
 
         .bank_fw = {
             .pid = {
-                [PID_ROLL] =    { 5, 7, 50 },
-                [PID_PITCH] =   { 5, 7, 50 },
-                [PID_YAW] =     { 6, 10, 60 },
+                [PID_ROLL] =    { 5, 7, 0, 50 },
+                [PID_PITCH] =   { 5, 7, 0, 50 },
+                [PID_YAW] =     { 6, 10, 0, 60 },
                 [PID_LEVEL] = {
                     .P = 20,    // Self-level strength
                     .I = 5,     // Self-leveing low-pass frequency (0 - disabled)
                     .D = 75,    // 75% horizon strength
+                    .FF = 0,
                 },
-                [PID_HEADING] = { 60, 0, 0 },
+                [PID_HEADING] = { 60, 0, 0, 0 },
                 [PID_POS_Z] = {
-                    .P = 50,    // FW_POS_Z_P * 100
-                    .I = 0,     // not used
-                    .D = 0,     // not used
+                    .P = 40,    // FW_POS_Z_P * 10
+                    .I = 5,     // FW_POS_Z_I * 10
+                    .D = 10,    // FW_POS_Z_D * 10
+                    .FF = 0,
                 },
                 [PID_POS_XY] = {
-                    .P = 75,     // FW_NAV_P * 100
-                    .I = 5,      // FW_NAV_I * 100
-                    .D = 8,      // FW_NAV_D * 100
+                    .P = 75,    // FW_POS_XY_P * 100
+                    .I = 5,     // FW_POS_XY_I * 100
+                    .D = 8,     // FW_POS_XY_D * 100
+                    .FF = 0,
                 }
             }
         },
 
-        .acc_soft_lpf_hz = 15,
         .dterm_soft_notch_hz = 0,
         .dterm_soft_notch_cutoff = 1,
         .dterm_lpf_hz = 40,
         .yaw_lpf_hz = 30,
-        .dterm_setpoint_weight = 0.0f,
+        .dterm_setpoint_weight = 1.0f,
+        .use_dterm_fir_filter = 1,
 
-        .rollPitchItermIgnoreRate = 200,     // dps
-        .yawItermIgnoreRate = 50,            // dps
+        .itermWindupPointPercent = 50,       // Percent
 
         .axisAccelerationLimitYaw = 10000,       // dps/s
         .axisAccelerationLimitRollPitch = 0,     // dps/s
@@ -191,40 +223,108 @@ PG_RESET_TEMPLATE(pidProfile_t, pidProfile,
         .fixedWingItermThrowLimit = FW_ITERM_THROW_LIMIT_DEFAULT,
         .fixedWingReferenceAirspeed = 1000,
         .fixedWingCoordinatedYawGain = 1.0f,
+        .fixedWingItermLimitOnStickPosition = 0.5f,
+
+        .loiter_direction = NAV_LOITER_RIGHT,
+        .navVelXyDTermLpfHz = NAV_ACCEL_CUTOFF_FREQUENCY_HZ,
+        .iterm_relax_type = ITERM_RELAX_SETPOINT,
+        .iterm_relax_cutoff = MC_ITERM_RELAX_CUTOFF_DEFAULT,
+        .iterm_relax = ITERM_RELAX_OFF,
+        .dBoostFactor = 1.0f,
+        .dBoostMaxAtAlleceleration = 7500.0f,
+        .dBoostGyroDeltaLpfHz = D_BOOST_GYRO_LPF_HZ,
 );
 
 void pidInit(void)
 {
-    // Calculate derivative using 5-point noise-robust differentiators without time delay (one-sided or forward filters)
-    // by Pavel Holoborodko, see http://www.holoborodko.com/pavel/numerical-methods/numerical-derivative/smooth-low-noise-differentiators/
-    // h[0] = 5/8, h[-1] = 1/4, h[-2] = -1, h[-3] = -1/4, h[-4] = 3/8
-    static const float dtermCoeffs[PID_GYRO_RATE_BUF_LENGTH] = {5.0f/8, 2.0f/8, -8.0f/8, -2.0f/8, 3.0f/8};
-    for (int axis = 0; axis < 3; ++ axis) {
-        firFilterInit(&pidState[axis].gyroRateFilter, pidState[axis].gyroRateBuf, PID_GYRO_RATE_BUF_LENGTH, dtermCoeffs);
-    }
+    pidResetTPAFilter();
 
     // Calculate max overall tilt (max pitch + max roll combined) as a limit to heading hold
     headingHoldCosZLimit = cos_approx(DECIDEGREES_TO_RADIANS(pidProfile()->max_angle_inclination[FD_ROLL])) *
                            cos_approx(DECIDEGREES_TO_RADIANS(pidProfile()->max_angle_inclination[FD_PITCH]));
 
     pidGainsUpdateRequired = false;
+
+    itermRelax = pidProfile()->iterm_relax;
+    itermRelaxType = pidProfile()->iterm_relax_type;
+    itermRelaxSetpointThreshold = MC_ITERM_RELAX_SETPOINT_THRESHOLD * MC_ITERM_RELAX_CUTOFF_DEFAULT / pidProfile()->iterm_relax_cutoff;
+
+#ifdef USE_D_BOOST
+    dBoostFactor = pidProfile()->dBoostFactor;
+    dBoostMaxAtAlleceleration = pidProfile()->dBoostMaxAtAlleceleration;
+#endif
+
 }
 
-#ifdef USE_DTERM_NOTCH
 bool pidInitFilters(void)
 {
-    const uint32_t refreshRate = getPidUpdateRate();
+    const uint32_t refreshRate = getLooptime();
+
+    if (refreshRate == 0) {
+        return false;
+    }
+
+    static float dtermCoeffs[PID_GYRO_RATE_BUF_LENGTH];
+
+    if (pidProfile()->use_dterm_fir_filter) {
+        // Calculate derivative using 5-point noise-robust differentiators without time delay (one-sided or forward filters)
+        // by Pavel Holoborodko, see http://www.holoborodko.com/pavel/numerical-methods/numerical-derivative/smooth-low-noise-differentiators/
+        // h[0] = 5/8, h[-1] = 1/4, h[-2] = -1, h[-3] = -1/4, h[-4] = 3/8
+        dtermCoeffs[0] = 5.0f/8;
+        dtermCoeffs[1] = 2.0f/8;
+        dtermCoeffs[2] = -8.0f/8;
+        dtermCoeffs[3] = -2.0f/8;
+        dtermCoeffs[4] = 3.0f/8;
+    } else {
+        //simple d(t) - d(t-1) differentiator 
+        dtermCoeffs[0] = 1.0f;
+        dtermCoeffs[1] = -1.0f;
+        dtermCoeffs[2] = 0.0f;
+        dtermCoeffs[3] = 0.0f;
+        dtermCoeffs[4] = 0.0f;
+    }
+
+    for (int axis = 0; axis < 3; ++ axis) {
+        firFilterInit(&pidState[axis].gyroRateFilter, pidState[axis].gyroRateBuf, PID_GYRO_RATE_BUF_LENGTH, dtermCoeffs);
+    }
+
+#ifdef USE_DTERM_NOTCH
     notchFilterApplyFn = nullFilterApply;
-    if (refreshRate != 0 && pidProfile()->dterm_soft_notch_hz != 0){
+    if (pidProfile()->dterm_soft_notch_hz != 0) {
         notchFilterApplyFn = (filterApplyFnPtr)biquadFilterApply;
         for (int axis = 0; axis < 3; ++ axis) {
             biquadFilterInitNotch(&pidState[axis].deltaNotchFilter, refreshRate, pidProfile()->dterm_soft_notch_hz, pidProfile()->dterm_soft_notch_cutoff);
         }
-        return true;
     }
-    return false;
-}
 #endif
+
+    // Init other filters
+    for (int axis = 0; axis < 3; ++ axis) {
+        biquadFilterInitLPF(&pidState[axis].deltaLpfState, pidProfile()->dterm_lpf_hz, refreshRate);
+    }
+
+    for (int i = 0; i < XYZ_AXIS_COUNT; i++) {
+        pt1FilterInit(&windupLpf[i], pidProfile()->iterm_relax_cutoff, refreshRate * 1e-6f);
+    }
+
+#ifdef USE_D_BOOST
+    for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
+        biquadFilterInitLPF(&pidState[axis].dBoostGyroLpf, pidProfile()->dBoostGyroDeltaLpfHz, getLooptime());
+    }
+#endif
+
+    pidFiltersConfigured = true;
+
+    return true;
+}
+
+void pidResetTPAFilter(void)
+{
+    if (STATE(FIXED_WING) && currentControlRateProfile->throttle.fixedWingTauMs > 0) {
+        pt1FilterInitRC(&fixedWingTpaFilter, currentControlRateProfile->throttle.fixedWingTauMs * 1e-3f, getLooptime() * 1e-6f);
+        pt1FilterReset(&fixedWingTpaFilter, motorConfig()->minthrottle);
+    }
+}
 
 void pidResetErrorAccumulators(void)
 {
@@ -264,16 +364,16 @@ float pidRcCommandToRate(int16_t stick, uint8_t rate)
     return scaleRangef((float) stick, -500.0f, 500.0f, -maxRateDPS, maxRateDPS);
 }
 
-static float calculateFixedWingTPAFactor(void)
+static float calculateFixedWingTPAFactor(uint16_t throttle)
 {
     float tpaFactor;
 
     // tpa_rate is amount of curve TPA applied to PIDs
     // tpa_breakpoint for fixed wing is cruise throttle value (value at which PIDs were tuned)
     if (currentControlRateProfile->throttle.dynPID != 0 && currentControlRateProfile->throttle.pa_breakpoint > motorConfig()->minthrottle) {
-        if (rcCommand[THROTTLE] > motorConfig()->minthrottle) {
+        if (throttle > motorConfig()->minthrottle) {
             // Calculate TPA according to throttle
-            tpaFactor = 0.5f + ((float)(currentControlRateProfile->throttle.pa_breakpoint - motorConfig()->minthrottle) / (rcCommand[THROTTLE] - motorConfig()->minthrottle) / 2.0f);
+            tpaFactor = 0.5f + ((float)(currentControlRateProfile->throttle.pa_breakpoint - motorConfig()->minthrottle) / (throttle - motorConfig()->minthrottle) / 2.0f);
 
             // Limit to [0.5; 2] range
             tpaFactor = constrainf(tpaFactor, 0.5f, 2.0f);
@@ -313,14 +413,30 @@ void schedulePidGainsUpdate(void)
     pidGainsUpdateRequired = true;
 }
 
-void updatePIDCoefficients(void)
+void FAST_CODE NOINLINE updatePIDCoefficients(void)
 {
     STATIC_FASTRAM uint16_t prevThrottle = 0;
 
-    // Check if throttle changed
-    if (rcCommand[THROTTLE] != prevThrottle) {
-        prevThrottle = rcCommand[THROTTLE];
-        pidGainsUpdateRequired = true;
+    // Check if throttle changed. Different logic for fixed wing vs multirotor
+    if (STATE(FIXED_WING) && (currentControlRateProfile->throttle.fixedWingTauMs > 0)) {
+        uint16_t filteredThrottle = pt1FilterApply3(&fixedWingTpaFilter, rcCommand[THROTTLE], dT);
+        if (filteredThrottle != prevThrottle) {
+            prevThrottle = filteredThrottle;
+            pidGainsUpdateRequired = true;
+        }
+    }
+    else {
+        if (rcCommand[THROTTLE] != prevThrottle) {
+            prevThrottle = rcCommand[THROTTLE];
+            pidGainsUpdateRequired = true;
+        }
+    }
+
+    /*
+     * Compute stick position in range of [-1.0f : 1.0f] without deadband and expo
+     */
+    for (int axis = 0; axis < 3; axis++) {
+        pidState[axis].stickPosition = constrain(rxGetChannelValue(axis) - PWM_RANGE_MIDDLE, -500, 500) / 500.0f;
     }
 
     // If nothing changed - don't waste time recalculating coefficients
@@ -328,7 +444,7 @@ void updatePIDCoefficients(void)
         return;
     }
 
-    const float tpaFactor = STATE(FIXED_WING) ? calculateFixedWingTPAFactor() : calculateMultirotorTPAFactor();
+    const float tpaFactor = STATE(FIXED_WING) ? calculateFixedWingTPAFactor(prevThrottle) : calculateMultirotorTPAFactor();
 
     // PID coefficients can be update only with THROTTLE and TPA or inflight PID adjustments
     //TODO: Next step would be to update those only at THROTTLE or inflight adjustments change
@@ -338,7 +454,7 @@ void updatePIDCoefficients(void)
             pidState[axis].kP  = pidBank()->pid[axis].P / FP_PID_RATE_P_MULTIPLIER  * tpaFactor;
             pidState[axis].kI  = pidBank()->pid[axis].I / FP_PID_RATE_I_MULTIPLIER  * tpaFactor;
             pidState[axis].kD  = 0.0f;
-            pidState[axis].kFF = pidBank()->pid[axis].D / FP_PID_RATE_FF_MULTIPLIER * tpaFactor;
+            pidState[axis].kFF = pidBank()->pid[axis].FF / FP_PID_RATE_FF_MULTIPLIER * tpaFactor;
             pidState[axis].kT  = 0.0f;
         }
         else {
@@ -363,8 +479,8 @@ void updatePIDCoefficients(void)
 static float calcHorizonRateMagnitude(void)
 {
     // Figure out the raw stick positions
-    const int32_t stickPosAil = ABS(getRcStickDeflection(FD_ROLL, rxConfig()->midrc));
-    const int32_t stickPosEle = ABS(getRcStickDeflection(FD_PITCH, rxConfig()->midrc));
+    const int32_t stickPosAil = ABS(getRcStickDeflection(FD_ROLL));
+    const int32_t stickPosEle = ABS(getRcStickDeflection(FD_PITCH));
     const float mostDeflectedStickPos = constrain(MAX(stickPosAil, stickPosEle), 0, 500) / 500.0f;
     const float modeTransitionStickPos = constrain(pidBank()->pid[PID_LEVEL].D, 0, 100) / 100.0f;
 
@@ -384,7 +500,12 @@ static float calcHorizonRateMagnitude(void)
 static void pidLevel(pidState_t *pidState, flight_dynamics_index_t axis, float horizonRateMagnitude)
 {
     // This is ROLL/PITCH, run ANGLE/HORIZON controllers
-    const float angleTarget = pidRcCommandToAngle(rcCommand[axis], pidProfile()->max_angle_inclination[axis]);
+    float angleTarget = pidRcCommandToAngle(rcCommand[axis], pidProfile()->max_angle_inclination[axis]);
+
+    // Automatically pitch down if the throttle is manually controlled and reduced bellow cruise throttle
+    if ((axis == FD_PITCH) && STATE(FIXED_WING) && FLIGHT_MODE(ANGLE_MODE) && !navigationIsControllingThrottle())
+        angleTarget += scaleRange(MAX(0, navConfig()->fw.cruise_throttle - rcCommand[THROTTLE]), 0, navConfig()->fw.cruise_throttle - PWM_RANGE_MIN, 0, mixerConfig()->fwMinThrottleDownPitchAngle);
+
     const float angleErrorDeg = DECIDEGREES_TO_DEGREES(angleTarget - attitude.raw[axis]);
 
     float angleRateTarget = constrainf(angleErrorDeg * (pidBank()->pid[PID_LEVEL].P / FP_PID_LEVEL_P_MULTIPLIER), -currentControlRateProfile->stabilized.rates[axis] * 10.0f, currentControlRateProfile->stabilized.rates[axis] * 10.0f);
@@ -414,7 +535,7 @@ static void pidLevel(pidState_t *pidState, flight_dynamics_index_t axis, float h
 }
 
 /* Apply angular acceleration limit to rate target to limit extreme stick inputs to respect physical capabilities of the machine */
-static void pidApplySetpointRateLimiting(pidState_t *pidState, flight_dynamics_index_t axis)
+static void FAST_CODE pidApplySetpointRateLimiting(pidState_t *pidState, flight_dynamics_index_t axis)
 {
     const uint32_t axisAccelLimit = (axis == FD_YAW) ? pidProfile()->axisAccelerationLimitYaw : pidProfile()->axisAccelerationLimitRollPitch;
 
@@ -423,8 +544,20 @@ static void pidApplySetpointRateLimiting(pidState_t *pidState, flight_dynamics_i
     }
 }
 
-#ifdef USE_SERVOS
-static void pidApplyFixedWingRateController(pidState_t *pidState, flight_dynamics_index_t axis)
+bool isFixedWingItermLimitActive(float stickPosition)
+{
+    /*
+     * Iterm anti windup whould be active only when pilot controls the rotation
+     * velocity directly, not when ANGLE or HORIZON are used
+     */
+    if (FLIGHT_MODE(ANGLE_MODE) || FLIGHT_MODE(HORIZON_MODE)) {
+        return false;
+    }
+
+    return fabsf(stickPosition) > pidProfile()->fixedWingItermLimitOnStickPosition;
+}
+
+static void FAST_CODE pidApplyFixedWingRateController(pidState_t *pidState, flight_dynamics_index_t axis)
 {
     const float rateError = pidState->rateTarget - pidState->gyroRate;
 
@@ -440,17 +573,17 @@ static void pidApplyFixedWingRateController(pidState_t *pidState, flight_dynamic
     // Calculate integral
     pidState->errorGyroIf += rateError * pidState->kI * dT;
 
-    if (STATE(ANTI_WINDUP)) {
+    if (STATE(ANTI_WINDUP) || isFixedWingItermLimitActive(pidState->stickPosition)) {
         pidState->errorGyroIf = constrainf(pidState->errorGyroIf, -pidState->errorGyroIfLimit, pidState->errorGyroIfLimit);
     } else {
-        pidState->errorGyroIfLimit = ABS(pidState->errorGyroIf);
+        pidState->errorGyroIfLimit = fabsf(pidState->errorGyroIf);
     }
 
     if (pidProfile()->fixedWingItermThrowLimit != 0) {
         pidState->errorGyroIf = constrainf(pidState->errorGyroIf, -pidProfile()->fixedWingItermThrowLimit, pidProfile()->fixedWingItermThrowLimit);
     }
 
-#ifdef AUTOTUNE_FIXED_WING
+#ifdef USE_AUTOTUNE_FIXED_WING
     if (FLIGHT_MODE(AUTO_TUNE) && !FLIGHT_MODE(MANUAL_MODE)) {
         autotuneFixedWingUpdate(axis, pidState->rateTarget, pidState->gyroRate, newPTerm + newFFTerm);
     }
@@ -465,9 +598,71 @@ static void pidApplyFixedWingRateController(pidState_t *pidState, flight_dynamic
     axisPID_Setpoint[axis] = pidState->rateTarget;
 #endif
 }
+
+static void FAST_CODE applyItermRelax(const int axis, const float gyroRate, float currentPidSetpoint, float *itermErrorRate)
+{
+    const float setpointLpf = pt1FilterApply(&windupLpf[axis], currentPidSetpoint);
+    const float setpointHpf = fabsf(currentPidSetpoint - setpointLpf);
+
+    if (itermRelax) {
+        if (axis < FD_YAW || itermRelax == ITERM_RELAX_RPY) {
+
+            const float itermRelaxFactor = MAX(0, 1 - setpointHpf / itermRelaxSetpointThreshold);
+
+            if (itermRelaxType == ITERM_RELAX_SETPOINT) {
+                *itermErrorRate *= itermRelaxFactor;
+            } else if (itermRelaxType == ITERM_RELAX_GYRO ) {
+                *itermErrorRate = fapplyDeadbandf(setpointLpf - gyroRate, setpointHpf);
+            } else {
+                *itermErrorRate = 0.0f;
+            }
+
+            if (axis == FD_ROLL) {
+                DEBUG_SET(DEBUG_ITERM_RELAX, 0, lrintf(setpointHpf));
+                DEBUG_SET(DEBUG_ITERM_RELAX, 1, lrintf(itermRelaxFactor * 100.0f));
+                DEBUG_SET(DEBUG_ITERM_RELAX, 2, lrintf(*itermErrorRate));
+            }
+        }
+    }
+}
+#ifdef USE_D_BOOST
+static float FAST_CODE applyDBoost(pidState_t *pidState, flight_dynamics_index_t axis) {
+    
+    float dBoost = 1.0f;
+    
+    if (dBoostFactor > 1) {
+        const float dBoostGyroDelta = (pidState->gyroRate - pidState->previousRateGyro) / dT;
+        const float dBoostGyroAcceleration = fabsf(biquadFilterApply(&pidState->dBoostGyroLpf, dBoostGyroDelta));
+        const float dBoostRateAcceleration = fabsf((pidState->rateTarget - pidState->previousRateTarget) / dT);
+        
+        const float acceleration = MAX(dBoostGyroAcceleration, dBoostRateAcceleration);
+        dBoost = scaleRangef(acceleration, 0.0f, dBoostMaxAtAlleceleration, 1.0f, dBoostFactor);
+        dBoost = pt1FilterApply4(&pidState->dBoostLpf, dBoost, D_BOOST_LPF_HZ, dT);
+        dBoost = constrainf(dBoost, 1.0f, dBoostFactor);
+
+        if (axis == FD_ROLL) {
+            DEBUG_SET(DEBUG_D_BOOST, 0, dBoostGyroAcceleration);
+            DEBUG_SET(DEBUG_D_BOOST, 1, dBoostRateAcceleration);
+            DEBUG_SET(DEBUG_D_BOOST, 2, dBoost * 100);
+        } else if (axis == FD_PITCH) {
+            DEBUG_SET(DEBUG_D_BOOST, 3, dBoost * 100);
+        }
+
+        pidState->previousRateTarget = pidState->rateTarget;
+        pidState->previousRateGyro = pidState->gyroRate;
+    } 
+
+    return dBoost;
+}
+#else 
+static float applyDBoost(pidState_t *pidState, flight_dynamics_index_t axis) {
+    UNUSED(pidState);
+    UNUSED(axis);
+    return 1.0f;
+}
 #endif
 
-static void pidApplyMulticopterRateController(pidState_t *pidState, flight_dynamics_index_t axis)
+static void FAST_CODE pidApplyMulticopterRateController(pidState_t *pidState, flight_dynamics_index_t axis)
 {
     const float rateError = pidState->rateTarget - pidState->gyroRate;
 
@@ -489,17 +684,24 @@ static void pidApplyMulticopterRateController(pidState_t *pidState, flight_dynam
         // optimisation for when D8 is zero, often used by YAW axis
         newDTerm = 0;
     } else {
-        firFilterUpdate(&pidState->gyroRateFilter, pidProfile()->dterm_setpoint_weight * pidState->rateTarget - pidState->gyroRate);
-        newDTerm = firFilterApply(&pidState->gyroRateFilter) * (pidState->kD / dT);
+        // Calculate delta for Dterm calculation. Apply filters before derivative to minimize effects of dterm kick
+        float deltaFiltered = pidProfile()->dterm_setpoint_weight * pidState->rateTarget - pidState->gyroRate;
+
+#ifdef USE_DTERM_NOTCH
+        // Apply D-term notch
+        deltaFiltered = notchFilterApplyFn(&pidState->deltaNotchFilter, deltaFiltered);
+#endif
 
         // Apply additional lowpass
         if (pidProfile()->dterm_lpf_hz) {
-            newDTerm = pt1FilterApply4(&pidState->deltaLpfState, newDTerm, pidProfile()->dterm_lpf_hz, dT);
+            deltaFiltered = biquadFilterApply(&pidState->deltaLpfState, deltaFiltered);
         }
 
-#ifdef USE_DTERM_NOTCH
-        newDTerm = notchFilterApplyFn(&pidState->deltaNotchFilter, newDTerm);
-#endif
+        firFilterUpdate(&pidState->gyroRateFilter, deltaFiltered);
+        newDTerm = firFilterApply(&pidState->gyroRateFilter);
+
+        // Calculate derivative
+        newDTerm =  newDTerm * (pidState->kD / dT) * applyDBoost(pidState, axis);
 
         // Additionally constrain D
         newDTerm = constrainf(newDTerm, -300.0f, 300.0f);
@@ -510,16 +712,20 @@ static void pidApplyMulticopterRateController(pidState_t *pidState, flight_dynam
     const float newOutputLimited = constrainf(newOutput, -pidProfile()->pidSumLimit, +pidProfile()->pidSumLimit);
 
     // Prevent strong Iterm accumulation during stick inputs
-    const float integratorThreshold = (axis == FD_YAW) ? pidProfile()->yawItermIgnoreRate : pidProfile()->rollPitchItermIgnoreRate;
-    const float antiWindupScaler = constrainf(1.0f - (ABS(pidState->rateTarget) / integratorThreshold), 0.0f, 1.0f);
+    const float motorItermWindupPoint = 1.0f - (pidProfile()->itermWindupPointPercent / 100.0f);
+    const float antiWindupScaler = constrainf((1.0f - getMotorMixRange()) / motorItermWindupPoint, 0.0f, 1.0f);
 
-    pidState->errorGyroIf += (rateError * pidState->kI * antiWindupScaler * dT) + ((newOutputLimited - newOutput) * pidState->kT * dT);
+    float itermErrorRate = rateError;
+    applyItermRelax(axis, pidState->gyroRate, pidState->rateTarget, &itermErrorRate);
+
+    pidState->errorGyroIf += (itermErrorRate * pidState->kI * antiWindupScaler * dT)
+                             + ((newOutputLimited - newOutput) * pidState->kT * antiWindupScaler * dT);
 
     // Don't grow I-term if motors are at their limit
     if (STATE(ANTI_WINDUP) || mixerIsOutputSaturated()) {
         pidState->errorGyroIf = constrainf(pidState->errorGyroIf, -pidState->errorGyroIfLimit, pidState->errorGyroIfLimit);
     } else {
-        pidState->errorGyroIfLimit = ABS(pidState->errorGyroIf);
+        pidState->errorGyroIfLimit = fabsf(pidState->errorGyroIf);
     }
 
     axisPID[axis] = newOutputLimited;
@@ -631,16 +837,15 @@ float pidHeadingHold(void)
     return headingHoldRate;
 }
 
-#ifdef USE_FLM_TURN_ASSIST
 /*
  * TURN ASSISTANT mode is an assisted mode to do a Yaw rotation on a ground plane, allowing one-stick turn in RATE more
  * and keeping ROLL and PITCH attitude though the turn.
  */
 static void pidTurnAssistant(pidState_t *pidState)
 {
-    t_fp_vector targetRates;
-    targetRates.V.X = 0.0f;
-    targetRates.V.Y = 0.0f;
+    fpVector3_t targetRates;
+    targetRates.x = 0.0f;
+    targetRates.y = 0.0f;
 
     if (STATE(FIXED_WING)) {
         if (calculateCosTiltAngle() >= 0.173648f) {
@@ -667,7 +872,7 @@ static void pidTurnAssistant(pidState_t *pidState)
             float bankAngle = DECIDEGREES_TO_RADIANS(attitude.values.roll);
             float coordinatedTurnRateEarthFrame = GRAVITY_CMSS * tan_approx(-bankAngle) / airspeedForCoordinatedTurn;
 
-            targetRates.V.Z = RADIANS_TO_DEGREES(coordinatedTurnRateEarthFrame);
+            targetRates.z = RADIANS_TO_DEGREES(coordinatedTurnRateEarthFrame);
         }
         else {
             // Don't allow coordinated turn calculation if airplane is in hard bank or steep climb/dive
@@ -675,28 +880,51 @@ static void pidTurnAssistant(pidState_t *pidState)
         }
     }
     else {
-        targetRates.V.Z = pidState[YAW].rateTarget;
+        targetRates.z = pidState[YAW].rateTarget;
     }
 
     // Transform calculated rate offsets into body frame and apply
     imuTransformVectorEarthToBody(&targetRates);
 
     // Add in roll and pitch
-    pidState[ROLL].rateTarget = constrainf(pidState[ROLL].rateTarget + targetRates.V.X, -currentControlRateProfile->stabilized.rates[ROLL] * 10.0f, currentControlRateProfile->stabilized.rates[ROLL] * 10.0f);
-    pidState[PITCH].rateTarget = constrainf(pidState[PITCH].rateTarget + targetRates.V.Y, -currentControlRateProfile->stabilized.rates[PITCH] * 10.0f, currentControlRateProfile->stabilized.rates[PITCH] * 10.0f);
+    pidState[ROLL].rateTarget = constrainf(pidState[ROLL].rateTarget + targetRates.x, -currentControlRateProfile->stabilized.rates[ROLL] * 10.0f, currentControlRateProfile->stabilized.rates[ROLL] * 10.0f);
+    pidState[PITCH].rateTarget = constrainf(pidState[PITCH].rateTarget + targetRates.y, -currentControlRateProfile->stabilized.rates[PITCH] * 10.0f, currentControlRateProfile->stabilized.rates[PITCH] * 10.0f);
 
     // Replace YAW on quads - add it in on airplanes
     if (STATE(FIXED_WING)) {
-        pidState[YAW].rateTarget = constrainf(pidState[YAW].rateTarget + targetRates.V.Z * pidProfile()->fixedWingCoordinatedYawGain, -currentControlRateProfile->stabilized.rates[YAW] * 10.0f, currentControlRateProfile->stabilized.rates[YAW] * 10.0f);
+        pidState[YAW].rateTarget = constrainf(pidState[YAW].rateTarget + targetRates.z * pidProfile()->fixedWingCoordinatedYawGain, -currentControlRateProfile->stabilized.rates[YAW] * 10.0f, currentControlRateProfile->stabilized.rates[YAW] * 10.0f);
     }
     else {
-        pidState[YAW].rateTarget = constrainf(targetRates.V.Z, -currentControlRateProfile->stabilized.rates[YAW] * 10.0f, currentControlRateProfile->stabilized.rates[YAW] * 10.0f);
+        pidState[YAW].rateTarget = constrainf(targetRates.z, -currentControlRateProfile->stabilized.rates[YAW] * 10.0f, currentControlRateProfile->stabilized.rates[YAW] * 10.0f);
     }
 }
-#endif
 
-void pidController(void)
+static void pidApplyFpvCameraAngleMix(pidState_t *pidState, uint8_t fpvCameraAngle)
 {
+    static uint8_t lastFpvCamAngleDegrees = 0;
+    static float cosCameraAngle = 1.0;
+    static float sinCameraAngle = 0.0;
+
+    if (lastFpvCamAngleDegrees != fpvCameraAngle) {
+        lastFpvCamAngleDegrees = fpvCameraAngle;
+        cosCameraAngle = cos_approx(DEGREES_TO_RADIANS(fpvCameraAngle));
+        sinCameraAngle = sin_approx(DEGREES_TO_RADIANS(fpvCameraAngle));
+    }
+
+    // Rotate roll/yaw command from camera-frame coordinate system to body-frame coordinate system
+    const float rollRate = pidState[ROLL].rateTarget;
+    const float yawRate = pidState[YAW].rateTarget;
+    pidState[ROLL].rateTarget = constrainf(rollRate * cosCameraAngle -  yawRate * sinCameraAngle, -GYRO_SATURATION_LIMIT, GYRO_SATURATION_LIMIT);
+    pidState[YAW].rateTarget = constrainf(yawRate * cosCameraAngle + rollRate * sinCameraAngle, -GYRO_SATURATION_LIMIT, GYRO_SATURATION_LIMIT);
+}
+
+void FAST_CODE pidController(void)
+{
+    if (!pidFiltersConfigured) {
+        return;
+    }
+
+    bool canUseFpvCameraMix = true;
     uint8_t headingHoldState = getHeadingHoldState();
 
     if (headingHoldState == HEADING_HOLD_UPDATE_HEADING) {
@@ -725,13 +953,17 @@ void pidController(void)
         const float horizonRateMagnitude = calcHorizonRateMagnitude();
         pidLevel(&pidState[FD_ROLL], FD_ROLL, horizonRateMagnitude);
         pidLevel(&pidState[FD_PITCH], FD_PITCH, horizonRateMagnitude);
+        canUseFpvCameraMix = false;     // FPVANGLEMIX is incompatible with ANGLE/HORIZON
     }
 
-#ifdef USE_FLM_TURN_ASSIST
     if (FLIGHT_MODE(TURN_ASSISTANT) || navigationRequiresTurnAssistance()) {
         pidTurnAssistant(pidState);
+        canUseFpvCameraMix = false;     // FPVANGLEMIX is incompatible with TURN_ASSISTANT
     }
-#endif
+
+    if (canUseFpvCameraMix && IS_RC_MODE_ACTIVE(BOXFPVANGLEMIX) && currentControlRateProfile->misc.fpvCamAngleDegrees) {
+        pidApplyFpvCameraAngleMix(pidState, currentControlRateProfile->misc.fpvCamAngleDegrees);
+    }
 
     // Apply setpoint rate of change limits
     for (int axis = 0; axis < 3; axis++) {
@@ -741,15 +973,11 @@ void pidController(void)
     // Step 4: Run gyro-driven control
     for (int axis = 0; axis < 3; axis++) {
         // Apply PID setpoint controller
-#ifdef USE_SERVOS
         if (STATE(FIXED_WING)) {
             pidApplyFixedWingRateController(&pidState[axis], axis);
         }
         else {
             pidApplyMulticopterRateController(&pidState[axis], axis);
         }
-#else
-        pidApplyMulticopterRateController(&pidState[axis], axis);
-#endif
     }
 }

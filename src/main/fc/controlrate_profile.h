@@ -47,6 +47,7 @@ typedef struct controlRateConfig_s {
         uint8_t rcExpo8;
         uint8_t dynPID;
         uint16_t pa_breakpoint;                // Breakpoint where TPA is activated
+        uint16_t fixedWingTauMs;               // Time constant of airplane TPA PT1-filter
     } throttle;
 
     struct {
@@ -60,6 +61,10 @@ typedef struct controlRateConfig_s {
         uint8_t rcYawExpo8;
         uint8_t rates[3];
     } manual;
+
+    struct {
+        uint8_t fpvCamAngleDegrees;             // Camera angle to treat as "forward" base axis in ACRO (Roll and Yaw sticks will command rotation considering this axis)
+    } misc;
 
 } controlRateConfig_t;
 

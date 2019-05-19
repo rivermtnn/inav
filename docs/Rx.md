@@ -35,6 +35,8 @@ http://www.frsky-rc.com/product/pro.php?pro_id=21
 
 ## Serial Receivers
 
+*Connect the receivers to UARTs and not to Software Serial ports. Using software serial for RX input can cause unexpected behaviours beacause the port cannot handle reliably the bit rate needed by the most common protocols*
+
 ### Spektrum
 
 8 channels via serial currently supported.
@@ -60,7 +62,7 @@ This pseudo-RSSI should work on all makes of Spektrum satellite RX; it is tested
 
 16 channels via serial currently supported.  See below how to set up your transmitter.
 
-* You probably need an inverter between the receiver output and the flight controller. However, some flight controllers have this built in (the main port on CC3D, for example), and doesn't need one.
+* You probably need an inverter between the receiver output and the flight controller. However, some flight controllers have this built in and doesn't need one.
 * Some OpenLRS receivers produce a non-inverted SBUS signal. It is possible to switch SBUS inversion off using CLI command `set sbus_inversion = OFF` when using an F3 based flight controller.
 * Softserial ports cannot be used with SBUS because it runs at too high of a bitrate (1Mbps).  Refer to the chapter specific to your board to determine which port(s) may be used.
 * You will need to configure the channel mapping in the GUI (Receiver tab) or CLI (`map` command). Note that channels above 8 are mapped "straight", with no remapping.
@@ -168,7 +170,7 @@ Only one receiver feature can be enabled at a time.
 
 The software has signal loss detection which is always enabled.  Signal loss detection is used for safety and failsafe reasons.
 
-The `rx_min_usec` and `rx_max_usec` settings helps detect when your RX stops sending any data, enters failsafe mode or when the RX looses signal.
+The `rx_min_usec` and `rx_max_usec` settings helps detect when your RX stops sending any data, enters failsafe mode or when the RX loses signal.
 
 By default, when the signal loss is detected the FC will set pitch/roll/yaw to the value configured for `mid_rc`. The throttle will be set to the value configured for `rx_min_usec` or `mid_rc` if using 3D feature.
 
@@ -177,49 +179,6 @@ Signal loss can be detected when:
 1. no rx data is received (due to radio reception, recevier configuration or cabling issues).
 2. using Serial RX and receiver indicates failsafe condition.
 3. using any of the first 4 stick channels do not have a value in the range specified by `rx_min_usec` and `rx_max_usec`.
-
-### RX loss configuration
-
-The `rxfail` cli command is used to configure per-channel rx-loss behaviour.
-You can use the `rxfail` command to change this behaviour.
-A flight channel can either be AUTOMATIC or HOLD, an AUX channel can either be SET or HOLD.  
-
-* AUTOMATIC - Flight channels are set to safe values (low throttle, mid position for yaw/pitch/roll).
-* HOLD - Channel holds the last value.
-* SET - Channel is set to a specific configured value.
-
-The default mode is AUTOMATIC for flight channels and HOLD for AUX channels.
-
-The rxfail command can be used in conjunction with mode ranges to trigger various actions.
-
-The `rxfail` command takes 2 or 3 arguments.
-* Index of channel (See below)
-* Mode ('a' = AUTOMATIC, 'h' = HOLD, 's' = SET)
-* A value to use when in SET mode.
-
-Channels are always specified in the same order, regardless of your channel mapping.
-
-* Roll is 0
-* Pitch is 1
-* Yaw is 2
-* Throttle is 3.
-* Aux channels are 4 onwards.
-
-Examples:
-
-To make Throttle channel have an automatic value when RX loss is detected:
-
-`rxfail 3 a`
-
-To make AUX4 have a value of 2000 when RX loss is detected:
-
-`rxfail 7 s 2000`
-
-To make AUX8 hold it's value when RX loss is detected:
-
-`rxfail 11 h`
-
-WARNING: Always make sure you test the behavior is as expected after configuring rxfail settings!
 
 #### `rx_min_usec`
 
@@ -233,7 +192,7 @@ The highest channel value considered valid.  e.g. PWM/PPM pulse length
 
 See the Serial chapter for some some RX configuration examples.
 
-To setup spectrum on the Naze32 or clones in the GUI:
+To setup spectrum in the GUI:
 1. Start on the "Ports" tab make sure that UART2 has serial RX.  If not set the checkbox, save and reboot.
 2. Move to the "Configuration" page and in the upper lefthand corner choose Serial RX as the receiver type.
 3. Below that choose the type of serial receiver that you are using.  Save and reboot.

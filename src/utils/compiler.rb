@@ -61,6 +61,10 @@ class Compiler
             if flag == "" || flag == "-MMD" || flag == "-MP" || flag.start_with?("-save-temps")
                 next
             end
+            # -Wstrict-prototypes is not valid for C++
+            if flag == "-Wstrict-prototypes"
+                next
+            end
             if flag.start_with? "-std="
                 flag = "-std=c++11"
             end
@@ -80,7 +84,10 @@ class Compiler
         if args
             all_args.push(*args)
         end
-        all_args << "-o" << output << input
+        if output
+            all_args << "-o" << output
+        end
+        all_args << input
         stdout, stderr, compile_status = Open3.capture3(join_args(all_args))
 	raise "Compiler error:\n#{all_args.join(' ')}\n#{stderr}" if not options[:noerror] and not compile_status.success?
         return stdout, stderr

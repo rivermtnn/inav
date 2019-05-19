@@ -15,14 +15,11 @@
  * along with Cleanflight.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "stdint.h"
-
-
-#include "debug.h"
-
-int16_t debug[DEBUG16_VALUE_COUNT];
-uint8_t debugMode;
+#include "build/debug.h"
 
 #ifdef DEBUG_SECTION_TIMES
 timeUs_t sectionTimes[2][4];
 #endif
+
+int32_t debug[DEBUG32_VALUE_COUNT];
+uint8_t debugMode;

@@ -24,12 +24,12 @@
 // #define LED1                    PC10 // Red LED
 // #define LED2                    PC10 // Green LED
 
-#define BEEPER                  PC3
+#define BEEPER                  PA1
 #define BEEPER_INVERTED
 
 // MPU interrupt
 #define USE_EXTI
-#define MPU_INT_EXTI            PC4
+#define GYRO_INT_EXTI            PC4
 #define USE_MPU_DATA_READY_SIGNAL
 
 #define MPU9250_CS_PIN          PC0
@@ -57,9 +57,10 @@
 #define MAX7456_CS_PIN          PA4
 #define MAX7456_SPI_BUS         BUS_SPI1
 
-#define USB_IO
 #define USE_VCP
 // #define VBUS_SENSING_PIN        PA9
+
+#define USE_UART_INVERTER
 
 #define USE_UART1
 #define UART1_RX_PIN            PA10
@@ -69,14 +70,13 @@
 #define UART2_RX_PIN            PA3
 #define UART2_TX_PIN            PA2
 
-#define INVERTER_PIN_UART3      PA8
-
 #define USE_UART3
 #define UART3_RX_PIN            PB11
 #define UART3_TX_PIN            PB10
+#define INVERTER_PIN_UART3_RX   PA8
 
 #define USE_UART4
-#define UART4_RX_PIN            PA1
+#define UART4_RX_PIN            PC11
 #define UART4_TX_PIN            PA0
 
 #define USE_UART5
@@ -87,7 +87,11 @@
 #define UART6_RX_PIN            PC7
 #define UART6_TX_PIN            PC6
 
-#define SERIAL_PORT_COUNT       7 //VCP, UART1, UART2, UART3, UART4, UART5, UART6
+#define USE_SOFTSERIAL1
+#define SOFTSERIAL_1_RX_PIN     PA3     // shared with UART2 RX
+#define SOFTSERIAL_1_TX_PIN     PA2     // shared with UART2 TX
+
+#define SERIAL_PORT_COUNT       8       //VCP, UART1, UART2, UART3, UART4, UART5, UART6
 
 #define USE_SPI
 #define USE_SPI_DEVICE_1
@@ -110,7 +114,7 @@
 
 #define USE_I2C
 #define USE_I2C_DEVICE_1
-#define I2C1_SCL                PB8
+#define I2C1_SCL                PB6
 #define I2C1_SDA                PB7
 
 #define BOARD_HAS_VOLTAGE_DIVIDER
@@ -125,13 +129,14 @@
 #define USE_PITOT_MS4525
 #define PITOT_I2C_BUS           BUS_I2C1
 
-#define DEFAULT_FEATURES        (FEATURE_VBAT | FEATURE_CURRENT_METER | FEATURE_OSD )
+#define TEMPERATURE_I2C_BUS     BUS_I2C1
+
+#define DEFAULT_FEATURES        (FEATURE_TX_PROF_SEL | FEATURE_VBAT | FEATURE_CURRENT_METER | FEATURE_OSD | FEATURE_GPS | FEATURE_TELEMETRY)
 
 #define CURRENT_METER_SCALE     250
 
 // Number of available PWM outputs
 #define MAX_PWM_OUTPUT_PORTS       6
-#define USABLE_TIMER_CHANNEL_COUNT 6
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
 
@@ -139,6 +144,3 @@
 #define TARGET_IO_PORTB         0xffff
 #define TARGET_IO_PORTC         0xffff
 #define TARGET_IO_PORTD         (BIT(2))
-
-#define USED_TIMERS             ( TIM_N(3) | TIM_N(4) | TIM_N(8))
-

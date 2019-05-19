@@ -20,7 +20,10 @@
 #include <math.h>
 #include <string.h>
 
+#include "platform.h"
+
 #include "common/maths.h"
+#include "common/vector.h"
 #include "common/axis.h"
 
 #include "config/parameter_group.h"
@@ -28,10 +31,20 @@
 
 #include "drivers/sensor.h"
 
+#if defined(UNIT_TEST)
+// Unit tests can't include settings. Provide some dummy limits.
+#define SETTING_ALIGN_BOARD_ROLL_MIN -1800
+#define SETTING_ALIGN_BOARD_ROLL_MAX 3600
+#define SETTING_ALIGN_BOARD_PITCH_MIN -1800
+#define SETTING_ALIGN_BOARD_PITCH_MAX 3600
+#else
+#include "fc/settings.h"
+#endif
+
 #include "boardalignment.h"
 
 static bool standardBoardAlignment = true;     // board orientation correction
-static float boardRotation[3][3];              // matrix
+static fpMat3_t boardRotMatrix;
 
 // no template required since defaults are zero
 PG_REGISTER(boardAlignment_t, boardAlignment, PG_BOARD_ALIGNMENT, 0);
@@ -54,7 +67,7 @@ void initBoardAlignment(void)
         rotationAngles.angles.pitch = DECIDEGREES_TO_RADIANS(boardAlignment()->pitchDeciDegrees);
         rotationAngles.angles.yaw   = DECIDEGREES_TO_RADIANS(boardAlignment()->yawDeciDegrees  );
 
-        buildRotationMatrix(&rotationAngles, boardRotation);
+        rotationMatrixFromAngles(&boardRotMatrix, &rotationAngles);
     }
 }
 
@@ -63,32 +76,35 @@ void updateBoardAlignment(int16_t roll, int16_t pitch)
     const float sinAlignYaw = sin_approx(DECIDEGREES_TO_RADIANS(boardAlignment()->yawDeciDegrees));
     const float cosAlignYaw = cos_approx(DECIDEGREES_TO_RADIANS(boardAlignment()->yawDeciDegrees));
 
-    boardAlignmentMutable()->rollDeciDegrees += -sinAlignYaw * pitch + cosAlignYaw * roll;
-    boardAlignmentMutable()->pitchDeciDegrees += cosAlignYaw * pitch + sinAlignYaw * roll;
+    int16_t rollDeciDegrees = boardAlignment()->rollDeciDegrees + -sinAlignYaw * pitch + cosAlignYaw * roll;
+    int16_t pitchDeciDegrees = boardAlignment()->pitchDeciDegrees + cosAlignYaw * pitch + sinAlignYaw * roll;
+
+    boardAlignmentMutable()->rollDeciDegrees = constrain(rollDeciDegrees, SETTING_ALIGN_BOARD_ROLL_MIN, SETTING_ALIGN_BOARD_ROLL_MAX);
+    boardAlignmentMutable()->pitchDeciDegrees = constrain(pitchDeciDegrees, SETTING_ALIGN_BOARD_PITCH_MIN, SETTING_ALIGN_BOARD_PITCH_MAX);
 
     initBoardAlignment();
 }
 
-void applyBoardAlignment(int32_t *vec)
+void FAST_CODE applyBoardAlignment(int32_t *vec)
 {
     if (standardBoardAlignment) {
         return;
     }
 
-    int32_t x = vec[X];
-    int32_t y = vec[Y];
-    int32_t z = vec[Z];
+    fpVector3_t fpVec = { .v = { vec[X], vec[Y], vec[Z] } };
+    rotationMatrixRotateVector(&fpVec, &fpVec, &boardRotMatrix);
 
-    vec[X] = lrintf(boardRotation[0][X] * x + boardRotation[1][X] * y + boardRotation[2][X] * z);
-    vec[Y] = lrintf(boardRotation[0][Y] * x + boardRotation[1][Y] * y + boardRotation[2][Y] * z);
-    vec[Z] = lrintf(boardRotation[0][Z] * x + boardRotation[1][Z] * y + boardRotation[2][Z] * z);
+    vec[X] = lrintf(fpVec.x);
+    vec[Y] = lrintf(fpVec.y);
+    vec[Z] = lrintf(fpVec.z);
 }
 
-void applySensorAlignment(int32_t *dest, uint8_t rotation)
+void FAST_CODE applySensorAlignment(int32_t * dest, int32_t * src, uint8_t rotation)
 {
-    const int32_t x = dest[X];
-    const int32_t y = dest[Y];
-    const int32_t z = dest[Z];
+    // Create a copy so we could use the same buffer for src & dest
+    const int32_t x = src[X];
+    const int32_t y = src[Y];
+    const int32_t z = src[Z];
 
     switch (rotation) {
     default:

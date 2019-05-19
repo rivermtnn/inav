@@ -18,12 +18,23 @@
 #pragma once
 
 #include "common/time.h"
+
 #include "config/parameter_group.h"
 
-#define VISIBLE_FLAG  0x0800
-#define VISIBLE(x)    (x & VISIBLE_FLAG)
-#define OSD_POS_MAX   0x3FF
-#define OSD_POS_MAX_CLI   (OSD_POS_MAX | VISIBLE_FLAG)
+#include "drivers/osd.h"
+
+#ifndef OSD_ALTERNATE_LAYOUT_COUNT
+#define OSD_ALTERNATE_LAYOUT_COUNT 3
+#endif
+#define OSD_LAYOUT_COUNT (OSD_ALTERNATE_LAYOUT_COUNT + 1)
+
+#define OSD_VISIBLE_FLAG    0x0800
+#define OSD_VISIBLE(x)      ((x) & OSD_VISIBLE_FLAG)
+#define OSD_POS(x,y)        ((x) | ((y) << 5))
+#define OSD_X(x)            ((x) & 0x001F)
+#define OSD_Y(x)            (((x) >> 5) & 0x001F)
+#define OSD_POS_MAX         0x3FF
+#define OSD_POS_MAX_CLI     (OSD_POS_MAX | OSD_VISIBLE_FLAG)
 
 typedef enum {
     OSD_RSSI_VALUE,
@@ -61,7 +72,75 @@ typedef enum {
     OSD_MAIN_BATT_CELL_VOLTAGE,
     OSD_THROTTLE_POS_AUTO_THR,
     OSD_HEADING_GRAPH,
-    OSD_EFFICIENCY,
+    OSD_EFFICIENCY_MAH_PER_KM,
+    OSD_WH_DRAWN,
+    OSD_BATTERY_REMAINING_CAPACITY,
+    OSD_BATTERY_REMAINING_PERCENT,
+    OSD_EFFICIENCY_WH_PER_KM,
+    OSD_TRIP_DIST,
+    OSD_ATTITUDE_PITCH,
+    OSD_ATTITUDE_ROLL,
+    OSD_MAP_NORTH,
+    OSD_MAP_TAKEOFF,
+    OSD_RADAR,
+    OSD_WIND_SPEED_HORIZONTAL,
+    OSD_WIND_SPEED_VERTICAL,
+    OSD_REMAINING_FLIGHT_TIME_BEFORE_RTH,
+    OSD_REMAINING_DISTANCE_BEFORE_RTH,
+    OSD_HOME_HEADING_ERROR,
+    OSD_CRUISE_HEADING_ERROR,
+    OSD_CRUISE_HEADING_ADJUSTMENT,
+    OSD_SAG_COMPENSATED_MAIN_BATT_VOLTAGE,
+    OSD_MAIN_BATT_SAG_COMPENSATED_CELL_VOLTAGE,
+    OSD_POWER_SUPPLY_IMPEDANCE,
+    OSD_LEVEL_PIDS,
+    OSD_POS_XY_PIDS,
+    OSD_POS_Z_PIDS,
+    OSD_VEL_XY_PIDS,
+    OSD_VEL_Z_PIDS,
+    OSD_HEADING_P,
+    OSD_BOARD_ALIGN_ROLL,
+    OSD_BOARD_ALIGN_PITCH,
+    OSD_RC_EXPO,
+    OSD_RC_YAW_EXPO,
+    OSD_THROTTLE_EXPO,
+    OSD_PITCH_RATE,
+    OSD_ROLL_RATE,
+    OSD_YAW_RATE,
+    OSD_MANUAL_RC_EXPO,
+    OSD_MANUAL_RC_YAW_EXPO,
+    OSD_MANUAL_PITCH_RATE,
+    OSD_MANUAL_ROLL_RATE,
+    OSD_MANUAL_YAW_RATE,
+    OSD_NAV_FW_CRUISE_THR,
+    OSD_NAV_FW_PITCH2THR,
+    OSD_FW_MIN_THROTTLE_DOWN_PITCH_ANGLE,
+    OSD_DEBUG, // Intentionally absent from configurator and CMS. Set it from CLI.
+    OSD_FW_ALT_PID_OUTPUTS,
+    OSD_FW_POS_PID_OUTPUTS,
+    OSD_MC_VEL_X_PID_OUTPUTS,
+    OSD_MC_VEL_Y_PID_OUTPUTS,
+    OSD_MC_VEL_Z_PID_OUTPUTS,
+    OSD_MC_POS_XYZ_P_OUTPUTS,
+    OSD_3D_SPEED,
+    OSD_IMU_TEMPERATURE,
+    OSD_BARO_TEMPERATURE,
+    OSD_TEMP_SENSOR_0_TEMPERATURE,
+    OSD_TEMP_SENSOR_1_TEMPERATURE,
+    OSD_TEMP_SENSOR_2_TEMPERATURE,
+    OSD_TEMP_SENSOR_3_TEMPERATURE,
+    OSD_TEMP_SENSOR_4_TEMPERATURE,
+    OSD_TEMP_SENSOR_5_TEMPERATURE,
+    OSD_TEMP_SENSOR_6_TEMPERATURE,
+    OSD_TEMP_SENSOR_7_TEMPERATURE,
+    OSD_ALTITUDE_MSL,
+    OSD_PLUS_CODE,
+    OSD_MAP_SCALE,
+    OSD_MAP_REFERENCE,
+    OSD_GFORCE,
+    OSD_GFORCE_X,
+    OSD_GFORCE_Y,
+    OSD_GFORCE_Z,
     OSD_ITEM_COUNT // MUST BE LAST
 } osd_items_e;
 
@@ -70,6 +149,11 @@ typedef enum {
     OSD_UNIT_METRIC,
     OSD_UNIT_UK, // Show speed in mp/h, other values in metric
 } osd_unit_e;
+
+typedef enum {
+    OSD_STATS_ENERGY_UNIT_MAH,
+    OSD_STATS_ENERGY_UNIT_WH,
+} osd_stats_energy_unit_e;
 
 typedef enum {
     OSD_CROSSHAIRS_STYLE_DEFAULT,
@@ -83,33 +167,71 @@ typedef enum {
     OSD_SIDEBAR_SCROLL_HOME_DISTANCE,
 } osd_sidebar_scroll_e;
 
+typedef enum {
+    OSD_ALIGN_LEFT,
+    OSD_ALIGN_RIGHT
+} osd_alignment_e;
+
 typedef struct osdConfig_s {
-    uint16_t item_pos[OSD_ITEM_COUNT];
+    // Layouts
+    uint16_t item_pos[OSD_LAYOUT_COUNT][OSD_ITEM_COUNT];
 
     // Alarms
     uint8_t rssi_alarm; // rssi %
-    uint16_t cap_alarm; // used mah
     uint16_t time_alarm; // fly minutes
     uint16_t alt_alarm; // positive altitude in m
     uint16_t dist_alarm; // home distance in m
     uint16_t neg_alt_alarm; // abs(negative altitude) in m
+    int16_t imu_temp_alarm_min;
+    int16_t imu_temp_alarm_max;
+    float gforce_alarm;
+    float gforce_axis_alarm_min;
+    float gforce_axis_alarm_max;
+#ifdef USE_BARO
+    int16_t baro_temp_alarm_min;
+    int16_t baro_temp_alarm_max;
+#endif
+#ifdef USE_TEMPERATURE_SENSOR
+    osd_alignment_e temp_label_align;
+#endif
 
-    uint8_t video_system;
+    videoSystem_e video_system;
     uint8_t row_shiftdown;
 
     // Preferences
+    uint8_t main_voltage_decimals;
     uint8_t ahi_reverse_roll;
-    osd_crosshairs_style_e crosshairs_style;
-    osd_sidebar_scroll_e left_sidebar_scroll;
-    osd_sidebar_scroll_e right_sidebar_scroll;
+    uint8_t ahi_max_pitch;
+    uint8_t crosshairs_style; // from osd_crosshairs_style_e
+    uint8_t left_sidebar_scroll; // from osd_sidebar_scroll_e
+    uint8_t right_sidebar_scroll; // from osd_sidebar_scroll_e
     uint8_t sidebar_scroll_arrows;
 
-    osd_unit_e units;
+    uint8_t units; // from osd_unit_e
+    uint8_t stats_energy_unit; // from osd_stats_energy_unit_e
+
+    bool    estimations_wind_compensation; // use wind compensation for estimated remaining flight/distance
+    uint8_t coordinate_digits;
+
+    bool osd_failsafe_switch_layout;
+    uint8_t plus_code_digits; // Number of digits to use in OSD_PLUS_CODE
 } osdConfig_t;
 
 PG_DECLARE(osdConfig_t, osdConfig);
 
-struct displayPort_s;
-void osdInit(struct displayPort_s *osdDisplayPort);
+typedef struct displayPort_s displayPort_t;
+
+void osdInit(displayPort_t *osdDisplayPort);
 void osdUpdate(timeUs_t currentTimeUs);
 void osdStartFullRedraw(void);
+// Sets a fixed OSD layout ignoring the RC input. Set it
+// to -1 to disable the override. If layout is >= 0 and
+// duration is > 0, the override is automatically cleared by
+// the OSD after the given duration. Otherwise, the caller must
+// explicitely remove it.
+void osdOverrideLayout(int layout, timeMs_t duration);
+// Returns the current current layout as well as wether its
+// set by the user configuration (modes, etc..) or by overriding it.
+int osdGetActiveLayout(bool *overridden);
+bool osdItemIsFixed(osd_items_e item);
+displayPort_t *osdGetDisplayPort(void);

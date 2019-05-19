@@ -268,6 +268,11 @@ static uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int l
 #define JUMBO_FRAME_SIZE_LIMIT 255
 static int mspSerialSendFrame(mspPort_t *msp, const uint8_t * hdr, int hdrLen, const uint8_t * data, int dataLen, const uint8_t * crc, int crcLen)
 {
+    // VSP MSP port might be unconnected. To prevent blocking - check if it's connected first
+    if (!serialIsConnected(msp->port)) {
+        return 0;
+    }
+
     // We are allowed to send out the response if
     //  a) TX buffer is completely empty (we are talking to well-behaving party that follows request-response scheduling;
     //     this allows us to transmit jumbo frames bigger than TX buffer (serialWriteBuf will block, but for jumbo frames we don't care)
@@ -411,12 +416,10 @@ static mspPostProcessFnPtr mspSerialProcessReceivedCommand(mspPort_t *msp, mspPr
 
 static void mspEvaluateNonMspData(mspPort_t * mspPort, uint8_t receivedChar)
 {
-#ifdef USE_CLI
     if (receivedChar == '#') {
         mspPort->pendingRequest = MSP_PENDING_CLI;
         return;
     }
-#endif
 
     if (receivedChar == serialConfig()->reboot_character) {
         mspPort->pendingRequest = MSP_PENDING_BOOTLOADER;
@@ -437,7 +440,11 @@ static void mspProcessPendingRequest(mspPort_t * mspPort)
             break;
 
         case MSP_PENDING_CLI:
-            cliEnter(mspPort->port);
+            if (!cliMode) {
+                // When we enter CLI mode - disable this MSP port. Don't care about preserving the port since CLI can only be exited via reboot
+                cliEnter(mspPort->port);
+                mspPort->port = NULL;
+            }
             break;
 
         default:
@@ -497,10 +504,9 @@ void mspSerialInit(void)
     mspSerialAllocatePorts();
 }
 
-int mspSerialPush(uint8_t cmd, const uint8_t *data, int datalen)
+int mspSerialPushPort(uint16_t cmd, const uint8_t *data, int datalen, mspPort_t *mspPort, mspVersion_e version)
 {
-    static uint8_t pushBuf[30];
-    int ret = 0;
+    uint8_t pushBuf[MSP_PORT_OUTBUF_SIZE];
 
     mspPacket_t push = {
         .buf = { .ptr = pushBuf, .end = ARRAYEND(pushBuf), },
@@ -508,22 +514,29 @@ int mspSerialPush(uint8_t cmd, const uint8_t *data, int datalen)
         .result = 0,
     };
 
+    sbufWriteData(&push.buf, data, datalen);
+
+    sbufSwitchToReader(&push.buf, pushBuf);
+
+    return mspSerialEncode(mspPort, &push, version);
+}
+
+int mspSerialPush(uint8_t cmd, const uint8_t *data, int datalen)
+{
+    int ret = 0;
+
     for (int portIndex = 0; portIndex < MAX_MSP_PORT_COUNT; portIndex++) {
         mspPort_t * const mspPort = &mspPorts[portIndex];
         if (!mspPort->port) {
             continue;
         }
 
-        // XXX Kludge!!! Avoid zombie VCP port (avoid VCP entirely for now)
-        if (mspPort->port->identifier == SERIAL_PORT_USB_VCP) {
+        // Avoid unconnected ports (only VCP for now)
+        if (!serialIsConnected(mspPort->port)) {
             continue;
         }
 
-        sbufWriteData(&push.buf, data, datalen);
-
-        sbufSwitchToReader(&push.buf, pushBuf);
-
-        ret = mspSerialEncode(mspPort, &push, MSP_V1);
+        ret = mspSerialPushPort(cmd, data, datalen, mspPort, MSP_V1);
     }
     return ret; // return the number of bytes written
 }
@@ -550,4 +563,15 @@ uint32_t mspSerialTxBytesFree(void)
     }
 
     return ret;
+}
+
+mspPort_t * mspSerialPortFind(const serialPort_t *serialPort)
+{
+    for (int portIndex = 0; portIndex < MAX_MSP_PORT_COUNT; portIndex++) {
+        mspPort_t * mspPort = &mspPorts[portIndex];
+        if (mspPort->port == serialPort) {
+            return mspPort;
+        }
+    }
+    return NULL;
 }

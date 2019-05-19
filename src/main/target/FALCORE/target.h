@@ -19,8 +19,6 @@
 
 #define TARGET_BOARD_IDENTIFIER "FLCR" // FaLCoRre
 
-#define TARGET_CONFIG
-
 #define LED0                    PC2
 #define LED1                    PB11
 
@@ -34,7 +32,7 @@
 #define MPU6500_SPI_BUS         BUS_SPI1
 
 #define USE_EXTI
-#define MPU_INT_EXTI            PB0
+#define GYRO_INT_EXTI            PB0
 #define USE_MPU_DATA_READY_SIGNAL
 
 #define USE_GYRO
@@ -54,9 +52,9 @@
 #define USE_MAG_HMC5883
 #define USE_MAG_QMC5883
 #define USE_MAG_IST8310
+#define USE_MAG_IST8308
 #define USE_MAG_MAG3110
-
-#define USB_IO
+#define USE_MAG_LIS3MDL
 
 #define USE_VCP
 #define USE_UART1
@@ -110,10 +108,7 @@
 #define RSSI_ADC_CHANNEL         ADC_CHN_2
 
 #define USE_LED_STRIP
-#define USE_LED_STRIP_ON_DMA1_CHANNEL2
 #define WS2811_PIN                      PA8
-#define WS2811_DMA_STREAM               DMA1_Channel2
-#define WS2811_DMA_HANDLER_IDENTIFER    DMA1_CH2_HANDLER
 
 #define USE_SERIAL_4WAY_BLHELI_INTERFACE
 
@@ -132,7 +127,7 @@
 #define RANGEFINDER_HCSR04_TRIGGER_PIN       PA7
 #define RANGEFINDER_HCSR04_ECHO_PIN          PA2
 
-#define DEFAULT_FEATURES        (FEATURE_BLACKBOX | FEATURE_VBAT | FEATURE_GPS | FEATURE_TELEMETRY | FEATURE_LED_STRIP)
+#define DEFAULT_FEATURES        (FEATURE_TX_PROF_SEL | FEATURE_BLACKBOX | FEATURE_VBAT | FEATURE_GPS | FEATURE_TELEMETRY | FEATURE_LED_STRIP)
 #define DEFAULT_RX_TYPE         RX_TYPE_SERIAL
 
 // Number of available PWM outputs
@@ -145,6 +140,4 @@
 #define TARGET_IO_PORTD         0xFFFF
 #define TARGET_IO_PORTF         (BIT(0)|BIT(1)|BIT(4))
 
-#define USABLE_TIMER_CHANNEL_COUNT 9
-#define USED_TIMERS             (TIM_N(1) | TIM_N(2) | TIM_N(3) | TIM_N(8) | TIM_N(16))
-
+#define PCA9685_I2C_BUS         BUS_I2C2

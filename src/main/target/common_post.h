@@ -21,5 +21,33 @@
 
 // Targets with built-in vtx do not need external vtx
 #if defined(VTX) || defined(USE_RTC6705)
-# undef VTX_CONTROL
+# undef USE_VTX_CONTROL
+#endif
+
+// Backward compatibility for I2C OLED display
+#if !defined(USE_I2C)
+# undef USE_DASHBOARD
+# undef USE_OLED_UG2864
+#endif
+
+// Enable MSP_DISPLAYPORT for F3 targets without builtin OSD,
+// since it's used to display CMS on MWOSD
+#if !defined(USE_MSP_DISPLAYPORT) && (FLASH_SIZE > 128) && !defined(USE_OSD)
+#define USE_MSP_DISPLAYPORT
+#endif
+
+#ifdef USE_ITCM_RAM
+#define FAST_CODE                   __attribute__((section(".tcm_code")))
+#define NOINLINE                    __NOINLINE
+#else
+#define FAST_CODE
+#define NOINLINE
+#endif
+
+#ifdef STM32F3
+#undef USE_WIND_ESTIMATOR
+#undef USE_SERIALRX_SUMD
+#undef USE_SERIALRX_SUMH
+#undef USE_SERIALRX_XBUS
+#undef USE_SERIALRX_JETIEXBUS
 #endif
